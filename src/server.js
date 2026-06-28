@@ -4,6 +4,7 @@ const cors = require('cors');
 const logger = require('./utils/logger');
 const routes = require('./api/routes');
 const { iniciarAgendador } = require('./scraper/agendador');
+const { conectar } = require('./db/mongo');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -80,7 +81,7 @@ app.listen(PORT, () => {
   logger.info(`Frontend autorizado: ${origens.join(', ')}`);
 
   // Iniciar agendador do scraper
-  iniciarAgendador();
+  conectar().then(() => iniciarAgendador());
 });
 
 // Graceful shutdown

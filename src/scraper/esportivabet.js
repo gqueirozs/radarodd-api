@@ -1,38 +1,34 @@
 /**
- * Scraper EsportivaBet — Descoberta automática de todos os jogos da Copa
+ * Scraper EsportivaBet — com MongoDB Atlas para persistência
  * 
- * Banco de IDs em memória (acumula durante vida do processo).
- * A cada ciclo de 5min, varre 500 IDs novos em paralelo.
- * Jogos já conhecidos são fixos no código — novos são descobertos automaticamente.
+ * - MongoDB guarda jogos descobertos e cursor de varredura
+ * - Sem MongoDB: fallback em memória (BANCO_MEM)
+ * - Cada ciclo de 5min: atualiza jogos + varre 500 IDs novos em paralelo
  */
 const logger = require('../utils/logger');
+const db     = require('../db/mongo');
 
-// ── Banco em memória ─────────────────────────────────────────────────────────
-// IDs já confirmados como jogos da Copa do Mundo FIFA 2026 na EsportivaBet
-const BANCO = {
-  16913911: { casa: 'Países Baixos', fora: 'Marrocos',              startDate: '2026-06-30T01:00:00Z' },
-  16913912: { casa: 'Brasil',        fora: 'Japão',                 startDate: '2026-06-29T17:00:00Z' },
-  16913931: { casa: 'Estados Unidos', fora: 'Bósnia e Herzegovina', startDate: '2026-07-02T00:00:00Z' },
+// Fallback em memória se MongoDB não disponível
+const BANCO_MEM = {
+  16913911: { nomeCasa:'Países Baixos', nomeFora:'Marrocos',              startDate:'2026-06-30T01:00:00Z' },
+  16913912: { nomeCasa:'Brasil',        nomeFora:'Japão',                 startDate:'2026-06-29T17:00:00Z' },
+  16913931: { nomeCasa:'Estados Unidos',nomeFora:'Bósnia e Herzegovina',  startDate:'2026-07-02T00:00:00Z' },
 };
-
-// Próximo ID a varrer (avança a cada ciclo, cobre todo range da Copa)
-let proximoId = 16913932;
-const FIM_RANGE = 16990000;
-const BLOCO    = 500;
-const BATCH    = 40; // paralelo por batch
+let cursorMem = 16913932;
+const FIM = 16990000;
+const BLOCO = 500, BATCH = 40;
 
 // ── Altenar API ──────────────────────────────────────────────────────────────
-const ALTENAR = 'https://sb2frontend-altenar2.biahosted.com/api/widget';
-const PARAMS  = 'culture=pt-BR&timezoneOffset=180&integration=esportiva&deviceType=1&numFormat=en-GB&countryCode=BR';
-const HDRS    = {
+const BASE   = 'https://sb2frontend-altenar2.biahosted.com/api/widget';
+const PARAMS = 'culture=pt-BR&timezoneOffset=180&integration=esportiva&deviceType=1&numFormat=en-GB&countryCode=BR';
+const HDRS   = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124',
-  'Accept': 'application/json',
-  'Referer': 'https://esportiva.bet.br/',
+  'Accept': 'application/json', 'Referer': 'https://esportiva.bet.br/',
 };
 
 async function getEvento(id) {
-  const url = `${ALTENAR}/GetEventDetails?${PARAMS}&eventId=${id}&showNonBoosts=true`;
-  const res  = await fetch(url, { headers: HDRS, signal: AbortSignal.timeout(8000) });
+  const res = await fetch(`${BASE}/GetEventDetails?${PARAMS}&eventId=${id}&showNonBoosts=true`,
+    { headers: HDRS, signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const j = await res.json();
   return j?.Result || j;
@@ -42,9 +38,8 @@ function ehCopa(ev) {
   if (!ev?.competitors || ev.competitors.length < 2) return false;
   const sport = (ev.sport?.name || '').toLowerCase();
   const champ = (ev.champ?.name || '').toLowerCase();
-  const isFut  = sport === 'futebol' || sport === 'football';
-  const isCopa = champ.includes('copa do mundo') || champ.includes('world cup') || champ.includes('fifa world');
-  return isFut && isCopa;
+  return (sport === 'futebol' || sport === 'football') &&
+         (champ.includes('copa do mundo') || champ.includes('world cup') || champ.includes('fifa world'));
 }
 
 function parsearInfo(ev, id) {
@@ -53,10 +48,10 @@ function parsearInfo(ev, id) {
   if (ev.startDate) {
     const d = new Date(ev.startDate);
     data = d.toLocaleDateString('pt-BR');
-    hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    hora = d.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
   }
-  const nomeCasa = c[0]?.name || BANCO[id]?.casa || 'Casa';
-  const nomeFora = c[1]?.name || BANCO[id]?.fora || 'Fora';
+  const nomeCasa = c[0]?.name || BANCO_MEM[id]?.nomeCasa || 'Casa';
+  const nomeFora = c[1]?.name || BANCO_MEM[id]?.nomeFora || 'Fora';
   return {
     id: `${nomeCasa.toLowerCase().replace(/[^a-z0-9]/g,'-')}-vs-${nomeFora.toLowerCase().replace(/[^a-z0-9]/g,'-')}`,
     eventId: String(id), nomeCasa, nomeFora,
@@ -64,10 +59,8 @@ function parsearInfo(ev, id) {
     abbFora: c[1]?.abbreviation || nomeFora.slice(0,3).toUpperCase(),
     competicao: ev.champ?.name || 'Copa do Mundo 2026',
     fase: (ev.marketGroups?.[0]?.name) || 'Copa 2026',
-    data, hora,
-    estadio: ev.venue?.name || '',
-    status: 'pre',
-    startDate: ev.startDate || BANCO[id]?.startDate || null,
+    data, hora, estadio: ev.venue?.name || '',
+    status: 'pre', startDate: ev.startDate || null,
   };
 }
 
@@ -114,9 +107,8 @@ const ODDS_MANUAIS = {
 async function varrerBloco(inicio, fim) {
   const novos = [];
   for (let base = inicio; base <= fim; base += BATCH) {
-    const ids = Array.from({ length: Math.min(BATCH, fim - base + 1) }, (_, i) => base + i);
-    const res = await Promise.allSettled(ids.map(async id => {
-      if (BANCO[id]) return null;
+    const ids  = Array.from({ length: Math.min(BATCH, fim - base + 1) }, (_, i) => base + i);
+    const res  = await Promise.allSettled(ids.map(async id => {
       try {
         const ev = await getEvento(id);
         if (!ehCopa(ev)) return null;
@@ -125,10 +117,9 @@ async function varrerBloco(inicio, fim) {
     }));
     for (const r of res) {
       if (r.status === 'fulfilled' && r.value) {
+        novos.push(r.value);
         const { id, ev } = r.value;
-        BANCO[id] = { casa: ev.competitors[0].name, fora: ev.competitors[1].name, startDate: ev.startDate };
-        novos.push({ id, ev });
-        logger.ok(`Novo: ${ev.competitors[0].name} x ${ev.competitors[1].name} (${id})`);
+        logger.ok(`✦ Novo: ${ev.competitors[0].name} x ${ev.competitors[1].name} (id ${id})`);
       }
     }
     await new Promise(r => setTimeout(r, 150));
@@ -139,58 +130,93 @@ async function varrerBloco(inicio, fim) {
 // ── FUNÇÃO PRINCIPAL ─────────────────────────────────────────────────────────
 async function executarScrape() {
   const resultados = [];
+  const usandoMongo = !!process.env.MONGODB_URI;
 
-  // 1. Buscar dados atualizados para jogos conhecidos
-  logger.scraper(`Banco: ${Object.keys(BANCO).length} jogos conhecidos`);
-  for (const [idStr, meta] of Object.entries(BANCO)) {
+  // Carregar jogos existentes do MongoDB ou fallback memória
+  let jogosExistentes = {};
+  let proximoId = cursorMem;
+
+  if (usandoMongo) {
+    const jogosDB = await db.getJogos();
+    if (jogosDB && jogosDB.length > 0) {
+      for (const j of jogosDB) {
+        jogosExistentes[j.eventId] = j;
+      }
+      logger.scraper(`MongoDB: ${Object.keys(jogosExistentes).length} jogos`);
+    } else {
+      // Primeiro uso: popular com banco fixo
+      for (const [id, meta] of Object.entries(BANCO_MEM)) {
+        jogosExistentes[id] = { eventId: String(id), ...meta };
+      }
+    }
+    const cursor = await db.getCursor();
+    if (cursor) proximoId = cursor.proximo;
+  } else {
+    // Fallback memória
+    for (const [id, meta] of Object.entries(BANCO_MEM)) {
+      jogosExistentes[id] = { eventId: String(id), ...meta };
+    }
+  }
+
+  // 1. Atualizar/buscar info atual de cada jogo conhecido
+  for (const [idStr, meta] of Object.entries(jogosExistentes)) {
     const id = parseInt(idStr);
     try {
       const ev   = await getEvento(id);
       if (!ehCopa(ev)) continue;
       const info = parsearInfo(ev, id);
       const odds = ODDS_MANUAIS[id] || ODDS_VAZIAS();
-      resultados.push({ info, odds, coletadoEm: new Date().toISOString() });
-      // Atualizar banco em memória
-      BANCO[id] = { ...meta, casa: info.nomeCasa, fora: info.nomeFora, startDate: ev.startDate };
-    } catch (e) {
-      logger.warn(`Evento ${id}: ${e.message} — usando banco`);
-      // Usar dados do banco
-      const info = {
-        id: `${meta.casa.toLowerCase().replace(/[^a-z0-9]/g,'-')}-vs-${meta.fora.toLowerCase().replace(/[^a-z0-9]/g,'-')}`,
-        eventId: String(id), nomeCasa: meta.casa, nomeFora: meta.fora,
-        abbCasa: meta.casa.slice(0,3).toUpperCase(), abbFora: meta.fora.slice(0,3).toUpperCase(),
-        competicao:'Copa do Mundo 2026', fase:'Copa 2026',
-        data: meta.startDate ? new Date(meta.startDate).toLocaleDateString('pt-BR') : '--/--',
-        hora: meta.startDate ? new Date(meta.startDate).toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'}) : '--:--',
-        estadio:'', status:'pre', startDate: meta.startDate,
-      };
-      resultados.push({ info, odds: ODDS_MANUAIS[id] || ODDS_VAZIAS(), coletadoEm: new Date().toISOString() });
+      // Mesclar odds salvas no banco com as manuais
+      const oddsFinal = { ...(meta.odds || ODDS_VAZIAS()), ...ODDS_MANUAIS[id] } || ODDS_VAZIAS();
+      resultados.push({ info, odds: oddsFinal, coletadoEm: new Date().toISOString() });
+      if (usandoMongo) await db.upsertJogo(info, oddsFinal);
+      if (!BANCO_MEM[id]) BANCO_MEM[id] = { nomeCasa: info.nomeCasa, nomeFora: info.nomeFora, startDate: ev.startDate };
+    } catch {
+      // Usar dados do banco como fallback
+      if (meta.nomeCasa || meta.nome) {
+        const nomeCasa = meta.nomeCasa || meta.nome || 'Casa';
+        const nomeFora = meta.nomeFora || 'Fora';
+        const odds = meta.odds || ODDS_MANUAIS[id] || ODDS_VAZIAS();
+        resultados.push({
+          info: {
+            id: `${nomeCasa.toLowerCase().replace(/[^a-z0-9]/g,'-')}-vs-${nomeFora.toLowerCase().replace(/[^a-z0-9]/g,'-')}`,
+            eventId: String(id), nomeCasa, nomeFora,
+            abbCasa: nomeCasa.slice(0,3).toUpperCase(), abbFora: nomeFora.slice(0,3).toUpperCase(),
+            competicao:'Copa do Mundo 2026', fase:'Copa 2026',
+            data: meta.startDate ? new Date(meta.startDate).toLocaleDateString('pt-BR') : '--/--',
+            hora: meta.startDate ? new Date(meta.startDate).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '--:--',
+            estadio:'', status:'pre', startDate: meta.startDate,
+          },
+          odds,
+          coletadoEm: new Date().toISOString(),
+        });
+      }
     }
     await new Promise(r => setTimeout(r, 300));
   }
 
   // 2. Varrer bloco de 500 IDs novos
   const inicio = proximoId;
-  const fim    = Math.min(inicio + BLOCO - 1, FIM_RANGE);
+  const fim    = Math.min(inicio + BLOCO - 1, FIM);
   logger.scraper(`Varrendo IDs ${inicio}–${fim}...`);
 
   const novos = await varrerBloco(inicio, fim);
   for (const { id, ev } of novos) {
+    if (jogosExistentes[id]) continue;
     const info = parsearInfo(ev, id);
-    resultados.push({ info, odds: ODDS_MANUAIS[id] || ODDS_VAZIAS(), coletadoEm: new Date().toISOString() });
+    const odds = ODDS_MANUAIS[id] || ODDS_VAZIAS();
+    resultados.push({ info, odds, coletadoEm: new Date().toISOString() });
+    BANCO_MEM[id] = { nomeCasa: info.nomeCasa, nomeFora: info.nomeFora, startDate: ev.startDate };
+    if (usandoMongo) await db.upsertJogo(info, odds);
   }
 
   // Avançar cursor
-  proximoId = fim + 1;
-  if (proximoId > FIM_RANGE) {
-    proximoId = 16880000;
-    logger.scraper('Varredura completa — reiniciando');
-  }
+  const novoProximo = (fim + 1 > FIM) ? 16880000 : fim + 1;
+  cursorMem = novoProximo;
+  if (usandoMongo) await db.setCursor(novoProximo);
 
-  // Ordenar por data de início
   resultados.sort((a, b) => (a.info.startDate || '').localeCompare(b.info.startDate || ''));
-
-  logger.ok(`Total: ${resultados.length} jogos | ${novos.length} novos | próx: ${proximoId}`);
+  logger.ok(`Total: ${resultados.length} jogos | ${novos.length} novos | próx: ${novoProximo}`);
   return resultados;
 }
 
