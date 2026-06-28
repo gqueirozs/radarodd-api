@@ -16,15 +16,19 @@ const origens = [
   process.env.FRONTEND_URL,
   'http://localhost:3000',
   'http://localhost:5173',
+  'https://radarodd.netlify.app',
 ].filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Permite requests sem origin (Postman, curl, etc.) em dev
-    if (!origin || process.env.NODE_ENV !== 'production') {
-      return callback(null, true);
-    }
-    if (origens.some(o => origin.startsWith(o))) {
+    // Permite requests sem origin (Postman, curl, etc.)
+    if (!origin) return callback(null, true);
+    // Permite todos os subdomínios netlify.app e localhost
+    if (
+      origin.endsWith('.netlify.app') ||
+      origin.startsWith('http://localhost') ||
+      origens.some(o => o && origin.startsWith(o))
+    ) {
       return callback(null, true);
     }
     callback(new Error(`CORS bloqueado para: ${origin}`));
