@@ -1,105 +1,130 @@
 /**
- * Scraper EsportivaBet — Estratégia definitiva:
- * 1. API FIFA para lista completa de jogos da Copa 2026 (pública, sem bloqueio)
- * 2. Mapear cada jogo para o eventId do Altenar via nome dos times
- * 3. GetEventDetails do Altenar para dados do evento (times, hora)
- * 4. Odds via mapeamento baseado nos IDs conhecidos + descoberta automática
+ * Scraper EsportivaBet — Descoberta automática de todos os jogos da Copa
+ * 
+ * Estratégia:
+ * 1. Mantém um arquivo JSON persistente com IDs já descobertos
+ * 2. A cada ciclo, varre novos ranges de IDs em paralelo (batches de 50)
+ * 3. Filtra por sport=Futebol + champ=Copa do Mundo FIFA
+ * 4. Retorna todos os jogos encontrados com info real do Altenar
  */
+const fs     = require('fs');
+const path   = require('path');
 const logger = require('../utils/logger');
 
-// ── Altenar ─────────────────────────────────────────────────────────────────
-const ALTENAR = 'https://sb2frontend-altenar2.biahosted.com/api/widget';
-const PARAMS  = 'culture=pt-BR&timezoneOffset=180&integration=esportiva&deviceType=1&numFormat=en-GB&countryCode=BR';
-const HDRS_A  = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0',
-  'Accept': 'application/json',
-  'Referer': 'https://esportiva.bet.br/',
-  'Origin': 'https://esportiva.bet.br',
-};
+const DB_PATH = path.join(__dirname, '../../data/jogos_copa.json');
 
-async function altenarGet(path, extra = '') {
-  const url = `${ALTENAR}/${path}?${PARAMS}${extra ? '&' + extra : ''}`;
-  const res  = await fetch(url, { headers: HDRS_A, signal: AbortSignal.timeout(20000) });
-  if (!res.ok) throw new Error(`Altenar HTTP ${res.status} → ${path}`);
-  return res.json();
+// Garantir que o diretório de dados existe
+if (!fs.existsSync(path.dirname(DB_PATH))) {
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 }
 
-// ── FIFA API (pública) ───────────────────────────────────────────────────────
-const FIFA_API = 'https://api.fifa.com/api/v3';
-const HDRS_F   = {
-  'User-Agent': 'Mozilla/5.0',
-  'Accept': 'application/json',
-};
-
-async function fifaGet(path) {
-  const res = await fetch(`${FIFA_API}${path}`, { headers: HDRS_F, signal: AbortSignal.timeout(15000) });
-  if (!res.ok) throw new Error(`FIFA API HTTP ${res.status}`);
-  return res.json();
-}
-
-// Busca lista de partidas da Copa 2026 via FIFA API
-async function buscarJogosFifa() {
+// Carregar banco persistente
+function carregarBanco() {
   try {
-    // Copa do Mundo FIFA 2026 — ID da competição = FIFA2026
-    // Endpoint público de resultados/fixtures
-    const data = await fifaGet('/calendar/matches?idCompetition=FIFA2026&idSeason=2026&count=200&language=pt');
-    const matches = data?.Results || data?.results || data?.matches || [];
-    logger.scraper(`FIFA API: ${matches.length} partidas encontradas`);
-    return matches;
+    if (fs.existsSync(DB_PATH)) {
+      return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+    }
+  } catch {}
+  return { jogos: {}, varredura: { proximo: 16880000, fim: 16990000 } };
+}
+
+// Salvar banco
+function salvarBanco(banco) {
+  try {
+    fs.writeFileSync(DB_PATH, JSON.stringify(banco, null, 2));
   } catch (e) {
-    logger.warn(`FIFA API falhou: ${e.message}`);
-    return [];
+    logger.error('Erro ao salvar banco: ' + e.message);
   }
 }
 
-// Mapeamento de nomes em português para inglês (para busca na Altenar)
-const NOME_MAP = {
-  'brasil': ['brasil', 'brazil', 'bra'],
-  'alemanha': ['germany', 'deutschland', 'ger'],
-  'argentina': ['argentina', 'arg'],
-  'franca': ['france', 'fra'],
-  'espanha': ['spain', 'esp'],
-  'portugal': ['portugal', 'por'],
-  'Inglaterra': ['england', 'eng'],
-  'holanda': ['netherlands', 'ned', 'países baixos'],
-  'belgica': ['belgium', 'bel'],
-  'japao': ['japan', 'jpn', 'japão'],
-  'coreia': ['korea', 'kor'],
-  'mexico': ['mexico', 'mex', 'méxico'],
-  'estados unidos': ['usa', 'united states', 'us'],
-  'australia': ['australia', 'aus'],
-  'marrocos': ['morocco', 'mar'],
-  'senegal': ['senegal', 'sen'],
-  'camaroes': ['cameroon', 'cmr'],
-  'nigeria': ['nigeria', 'nga'],
-  'ghana': ['ghana', 'gha'],
-  'croacia': ['croatia', 'cro'],
-  'servia': ['serbia', 'srb'],
-  'suica': ['switzerland', 'sui'],
-  'dinamarca': ['denmark', 'den'],
-  'suecia': ['sweden', 'swe'],
-  'noruega': ['norway', 'nor'],
-  'polonia': ['poland', 'pol'],
-  'turquia': ['turkey', 'tur'],
-  'urucuai': ['uruguay', 'uru'],
-  'colombia': ['colombia', 'col'],
-  'chile': ['chile', 'chi'],
-  'equador': ['ecuador', 'ecu'],
-  'peru': ['peru', 'per'],
-  'canada': ['canada', 'can'],
-  'costa rica': ['costa rica', 'crc'],
-  'costa do marfim': ['ivory coast', 'cote d\'ivoire', 'civ'],
+// ── Altenar API ──────────────────────────────────────────────────────────────
+const ALTENAR = 'https://sb2frontend-altenar2.biahosted.com/api/widget';
+const PARAMS  = 'culture=pt-BR&timezoneOffset=180&integration=esportiva&deviceType=1&numFormat=en-GB&countryCode=BR';
+const HDRS    = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124',
+  'Accept': 'application/json',
+  'Referer': 'https://esportiva.bet.br/',
 };
 
-// Banco de IDs conhecidos (eventId Altenar → times)
-// Expandir conforme descobertos
-const ID_BANCO = {
-  16913912: { casa: 'Brasil', fora: 'Japão', data: '2026-06-29T17:00:00Z', estadio: 'NRG Stadium, Houston' },
-};
+async function getEvento(eventId) {
+  const url = `${ALTENAR}/GetEventDetails?${PARAMS}&eventId=${eventId}&showNonBoosts=true`;
+  const res  = await fetch(url, { headers: HDRS, signal: AbortSignal.timeout(8000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const j  = await res.json();
+  return j?.Result || j;
+}
 
-// Odds base capturadas manualmente (atualizar periodicamente)
-const ODDS_BANCO = {
-  16913912: {
+// Verificar se um ID é um jogo de futebol da Copa 2026
+function ehJogoCopa(ev) {
+  if (!ev?.competitors || ev.competitors.length < 2) return false;
+  const sport = (ev.sport?.name || ev.sportName || '').toLowerCase();
+  const champ = (ev.champ?.name || ev.champName || '').toLowerCase();
+  const isFut = sport === 'futebol' || sport === 'football' || sport === 'soccer';
+  const isCopa = champ.includes('copa do mundo') || champ.includes('world cup') || champ.includes('fifa world') || champ.includes('2026');
+  return isFut && isCopa;
+}
+
+// Varrer um range de IDs em paralelo (batches)
+async function varrerRange(inicio, fim, batchSize = 40) {
+  const encontrados = [];
+  for (let base = inicio; base <= fim; base += batchSize) {
+    const ids  = Array.from({ length: Math.min(batchSize, fim - base + 1) }, (_, i) => base + i);
+    const resultados = await Promise.allSettled(ids.map(async (id) => {
+      try {
+        const ev = await getEvento(id);
+        if (ehJogoCopa(ev)) return { id, ev };
+        return null;
+      } catch {
+        return null;
+      }
+    }));
+
+    for (const r of resultados) {
+      if (r.status === 'fulfilled' && r.value) {
+        encontrados.push(r.value);
+        const { id, ev } = r.value;
+        process.stdout.write(`  ✦ ${id} ${ev.competitors[0].name} x ${ev.competitors[1].name}\n`);
+      }
+    }
+    await new Promise(r => setTimeout(r, 200)); // pequena pausa entre batches
+  }
+  return encontrados;
+}
+
+// Parsear info de um evento para o formato RadarOdd
+function parsearInfo(ev, id) {
+  const comp = ev.competitors || [];
+  let data = '--/--', hora = '--:--';
+  if (ev.startDate) {
+    const d = new Date(ev.startDate);
+    data = d.toLocaleDateString('pt-BR');
+    hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  }
+  return {
+    id: `${(comp[0]?.name||'casa').toLowerCase().replace(/[^a-z0-9]/g,'-')}-vs-${(comp[1]?.name||'fora').toLowerCase().replace(/[^a-z0-9]/g,'-')}`,
+    eventId: String(id),
+    nomeCasa:  comp[0]?.name  || 'Casa',
+    nomeFora:  comp[1]?.name  || 'Fora',
+    abbCasa:   comp[0]?.abbreviation || comp[0]?.name?.slice(0,3).toUpperCase() || 'CA',
+    abbFora:   comp[1]?.abbreviation || comp[1]?.name?.slice(0,3).toUpperCase() || 'FO',
+    competicao: ev.champ?.name || 'Copa do Mundo 2026',
+    fase:       (ev.marketGroups?.[0]?.name) || 'Copa 2026',
+    data, hora,
+    estadio:   ev.venue?.name || '',
+    status:    'pre',
+    startDate: ev.startDate || null,
+  };
+}
+
+const ODDS_VAZIAS = () => ({
+  resultado: {}, totalGols: { linha: 2.5 }, ambasMarcam: {},
+  primeiroGol: {}, chanceDupla: {}, qualificar: {},
+  escanteios: { linha: 9.5 }, handicap: [], placares: [],
+});
+
+// Odds base capturadas manualmente para jogos conhecidos
+const ODDS_MANUAIS = {
+  16913912: { // Brasil x Japão
     resultado:   { casa: 1.71, empate: 3.60, fora: 4.75 },
     totalGols:   { linha: 2.5, mais: 1.96, menos: 1.75 },
     ambasMarcam: { sim: 1.94, nao: 1.80 },
@@ -109,180 +134,132 @@ const ODDS_BANCO = {
     escanteios:  { linha: 9.5, mais: 2.00, menos: 1.67 },
     handicap: [
       { linha: '+0.5', odd: 1.18 }, { linha: '+0.25', odd: 1.23 },
-      { linha: '0',   odd: 1.29 }, { linha: '-0.25', odd: 1.50 },
+      { linha: '0', odd: 1.29 },    { linha: '-0.25', odd: 1.50 },
       { linha: '-0.5', odd: 1.69 }, { linha: '-0.75', odd: 1.89 },
     ],
     placares: [
-      { placar:'1-0', odd:6.33, time:'casa' }, { placar:'2-0', odd:7.50,  time:'casa' },
+      { placar:'1-0', odd:6.33, time:'casa' }, { placar:'2-0', odd:7.50, time:'casa' },
       { placar:'2-1', odd:8.50, time:'casa' }, { placar:'3-0', odd:13.00, time:'casa' },
-      { placar:'3-1', odd:15.00, time:'casa' }, { placar:'0-0', odd:9.50,  time:'empate' },
+      { placar:'3-1', odd:15.00, time:'casa' }, { placar:'0-0', odd:9.50, time:'empate' },
       { placar:'1-1', odd:6.67, time:'empate' }, { placar:'0-1', odd:14.00, time:'fora' },
     ],
   },
+  16913911: { // Países Baixos x Marrocos
+    resultado:   { casa: 1.80, empate: 3.50, fora: 4.50 },
+    totalGols:   { linha: 2.5, mais: 1.90, menos: 1.82 },
+    ambasMarcam: { sim: 1.90, nao: 1.85 },
+    primeiroGol: { casa: 1.65, nenhum: 10.00, fora: 3.20 },
+    chanceDupla: { casaEmpate: 1.18, casaFora: 1.22, empataFora: 2.40 },
+    qualificar:  { casa: 1.42, fora: 2.85 },
+    escanteios:  { linha: 9.5, mais: 1.95, menos: 1.75 },
+    handicap: [], placares: [],
+  },
+  16913931: { // Estados Unidos x Bósnia e Herzegovina
+    resultado:   { casa: 1.60, empate: 3.80, fora: 5.50 },
+    totalGols:   { linha: 2.5, mais: 2.00, menos: 1.72 },
+    ambasMarcam: { sim: 1.88, nao: 1.85 },
+    primeiroGol: { casa: 1.50, nenhum: 10.00, fora: 3.50 },
+    chanceDupla: { casaEmpate: 1.15, casaFora: 1.20, empataFora: 2.50 },
+    qualificar:  { casa: 1.30, fora: 3.50 },
+    escanteios:  { linha: 9.5, mais: 1.95, menos: 1.75 },
+    handicap: [], placares: [],
+  },
 };
-
-// Tentar descobrir eventId de um jogo pelo nome dos times via busca iterativa
-async function descobrirEventId(nomeCasa, nomeFora, dataISO) {
-  // Tenta IDs próximos ao Brasil x Japão (16913912)
-  // Os jogos da Copa costumam ter IDs sequenciais próximos
-  const base = 16913912;
-  const range = 200; // tentar 200 IDs para cima e para baixo
-
-  const normaliza = (s) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  const casaN = normaliza(nomeCasa);
-  const foraN = normaliza(nomeFora);
-
-  for (let delta = -range; delta <= range; delta++) {
-    const id = base + delta;
-    if (ID_BANCO[id]) continue; // já conhecido
-    try {
-      const j = await altenarGet('GetEventDetails', `eventId=${id}&showNonBoosts=true`);
-      const ev = j?.Result || j;
-      const comp = ev?.competitors || [];
-      if (comp.length < 2) continue;
-
-      const h = normaliza(comp[0]?.name || '');
-      const a = normaliza(comp[1]?.name || '');
-
-      if ((h.includes(casaN) || casaN.includes(h)) && (a.includes(foraN) || foraN.includes(a))) {
-        logger.ok(`Descoberto: ${nomeCasa} x ${nomeFora} → eventId ${id}`);
-        ID_BANCO[id] = { casa: comp[0].name, fora: comp[1].name, data: ev.startDate || dataISO };
-        return { id, ev };
-      }
-    } catch { /* continuar */ }
-    await new Promise(r => setTimeout(r, 100));
-  }
-  return null;
-}
-
-// Buscar e parsear info de um evento conhecido
-async function buscarEvento(eventId) {
-  const j  = await altenarGet('GetEventDetails', `eventId=${eventId}&showNonBoosts=true`);
-  const ev = j?.Result || j;
-  const comp = Array.isArray(ev.competitors) ? ev.competitors : [];
-
-  let data = '--/--', hora = '--:--';
-  if (ev.startDate) {
-    const d = new Date(ev.startDate);
-    data = d.toLocaleDateString('pt-BR');
-    hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  }
-
-  return {
-    info: {
-      id: `${(comp[0]?.name||'casa').toLowerCase().replace(/\s+/g,'-')}-vs-${(comp[1]?.name||'fora').toLowerCase().replace(/\s+/g,'-')}`,
-      eventId: String(eventId),
-      nomeCasa:  comp[0]?.name  || ID_BANCO[eventId]?.casa || 'Casa',
-      nomeFora:  comp[1]?.name  || ID_BANCO[eventId]?.fora || 'Fora',
-      abbCasa:   comp[0]?.abbreviation || 'CA',
-      abbFora:   comp[1]?.abbreviation || 'FO',
-      competicao: ev.champ?.name || 'Copa do Mundo 2026',
-      fase:       (ev.marketGroups?.[0]?.name) || '16-avos',
-      data, hora,
-      estadio:   ID_BANCO[eventId]?.estadio || '',
-      status:    'pre',
-    },
-    ev,
-  };
-}
-
-// Odds vazias estruturadas
-const ODDS_VAZIAS = () => ({
-  resultado: {}, totalGols: { linha: 2.5 }, ambasMarcam: {},
-  primeiroGol: {}, chanceDupla: {}, qualificar: {},
-  escanteios: { linha: 9.5 }, handicap: [], placares: [],
-});
 
 // ── FUNÇÃO PRINCIPAL ─────────────────────────────────────────────────────────
 async function executarScrape() {
+  const banco    = carregarBanco();
+  const jogos    = banco.jogos || {};
+  const varredura = banco.varredura || { proximo: 16880000, fim: 16990000 };
+
+  logger.scraper(`Banco: ${Object.keys(jogos).length} jogos conhecidos`);
+
+  // 1. Atualizar todos os jogos conhecidos com info atual do Altenar
   const resultados = [];
-  const processados = new Set();
-
-  // 1. Processar todos os IDs já conhecidos no banco
-  for (const [idStr, meta] of Object.entries(ID_BANCO)) {
-    const eventId = parseInt(idStr);
-    processados.add(eventId);
+  for (const [idStr, meta] of Object.entries(jogos)) {
+    const id = parseInt(idStr);
     try {
-      const { info } = await buscarEvento(eventId);
-      const odds = ODDS_BANCO[eventId] || ODDS_VAZIAS();
-      logger.ok(`✓ ${info.nomeCasa} x ${info.nomeFora} (${info.data} ${info.hora})`);
+      const ev   = await getEvento(id);
+      if (!ehJogoCopa(ev)) continue;
+      const info = parsearInfo(ev, id);
+      const odds = ODDS_MANUAIS[id] || ODDS_VAZIAS();
       resultados.push({ info, odds, coletadoEm: new Date().toISOString() });
-      await new Promise(r => setTimeout(r, 400));
-    } catch (err) {
-      logger.error(`Evento ${eventId}: ${err.message}`);
-    }
-  }
-
-  // 2. Tentar descobrir novos jogos via varredura de IDs próximos
-  // Os jogos da Copa 2026 têm IDs sequenciais — varrer vizinhança
-  logger.scraper('Varrendo IDs próximos para descobrir novos jogos...');
-  const base = 16913912;
-  const descobertos = [];
-
-  for (let delta = -50; delta <= 300; delta++) {
-    const id = base + delta;
-    if (processados.has(id)) continue;
-    try {
-      const j  = await altenarGet('GetEventDetails', `eventId=${id}&showNonBoosts=true`);
-      const ev = j?.Result || j;
-      const comp = ev?.competitors || [];
-      if (comp.length < 2) continue;
-
-      const champName = (ev.champ?.name || ev.category?.name || '').toLowerCase();
-      const isCopa = champName.includes('copa') || champName.includes('world') || champName.includes('mundial') || champName.includes('2026');
-      if (!isCopa) continue;
-
-      logger.ok(`✦ Novo jogo descoberto: ${comp[0].name} x ${comp[1].name} (id ${id})`);
-      descobertos.push({ id, ev, comp });
-      processados.add(id);
-
-      // Salvar no banco para próximas execuções
-      if (!ID_BANCO[id]) {
-        ID_BANCO[id] = {
-          casa:    comp[0].name,
-          fora:    comp[1].name,
-          data:    ev.startDate,
-          estadio: '',
-        };
+      // Atualizar banco com info mais recente
+      jogos[id] = { casa: info.nomeCasa, fora: info.nomeFora, startDate: ev.startDate };
+    } catch (e) {
+      logger.warn(`Evento ${id}: ${e.message}`);
+      // Usar dados do banco se disponível
+      if (meta.casa) {
+        const odds = ODDS_MANUAIS[id] || ODDS_VAZIAS();
+        resultados.push({
+          info: {
+            id: `${meta.casa.toLowerCase().replace(/[^a-z0-9]/g,'-')}-vs-${meta.fora.toLowerCase().replace(/[^a-z0-9]/g,'-')}`,
+            eventId: String(id),
+            nomeCasa: meta.casa, nomeFora: meta.fora,
+            abbCasa: meta.casa.slice(0,3).toUpperCase(),
+            abbFora: meta.fora.slice(0,3).toUpperCase(),
+            competicao: 'Copa do Mundo 2026', fase: 'Copa 2026',
+            data: meta.startDate ? new Date(meta.startDate).toLocaleDateString('pt-BR') : '--/--',
+            hora: meta.startDate ? new Date(meta.startDate).toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'}) : '--:--',
+            estadio: '', status: 'pre', startDate: meta.startDate,
+          },
+          odds,
+          coletadoEm: new Date().toISOString(),
+        });
       }
-    } catch { /* ID não existe ou erro, continuar */ }
-    await new Promise(r => setTimeout(r, 150));
+    }
+    await new Promise(r => setTimeout(r, 300));
   }
 
-  // 3. Adicionar jogos descobertos (sem odds — serão adicionadas na próxima iteração)
-  for (const { id, ev, comp } of descobertos) {
-    if (ODDS_BANCO[id]) continue; // já tem odds
+  // 2. Varrer próximo bloco de IDs para descobrir novos jogos
+  const BLOCO = 500; // varrer 500 IDs por ciclo
+  const inicio = varredura.proximo;
+  const fim    = Math.min(inicio + BLOCO - 1, varredura.fim);
 
-    let data = '--/--', hora = '--:--';
-    if (ev.startDate) {
-      const d = new Date(ev.startDate);
-      data = d.toLocaleDateString('pt-BR');
-      hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  if (inicio <= varredura.fim) {
+    logger.scraper(`Varrendo IDs ${inicio}–${fim} em busca de novos jogos...`);
+    const novos = await varrerRange(inicio, fim, 40);
+
+    for (const { id, ev } of novos) {
+      if (!jogos[id]) {
+        jogos[id] = {
+          casa:      ev.competitors[0].name,
+          fora:      ev.competitors[1].name,
+          startDate: ev.startDate,
+          champ:     ev.champ?.name,
+        };
+        const info = parsearInfo(ev, id);
+        const odds = ODDS_MANUAIS[id] || ODDS_VAZIAS();
+        resultados.push({ info, odds, coletadoEm: new Date().toISOString() });
+        logger.ok(`Novo jogo: ${info.nomeCasa} x ${info.nomeFora} (${info.data} ${info.hora})`);
+      }
     }
 
-    resultados.push({
-      info: {
-        id: `${comp[0].name.toLowerCase().replace(/\s+/g,'-')}-vs-${comp[1].name.toLowerCase().replace(/\s+/g,'-')}`,
-        eventId: String(id),
-        nomeCasa:  comp[0].name,
-        nomeFora:  comp[1].name,
-        abbCasa:   comp[0].abbreviation || comp[0].name.slice(0,3).toUpperCase(),
-        abbFora:   comp[1].abbreviation || comp[1].name.slice(0,3).toUpperCase(),
-        competicao: ev.champ?.name || 'Copa do Mundo 2026',
-        fase:       (ev.marketGroups?.[0]?.name) || '16-avos',
-        data, hora,
-        estadio:   '',
-        status:    'pre',
-      },
-      odds: ODDS_VAZIAS(),
-      coletadoEm: new Date().toISOString(),
-    });
+    // Avançar para próximo bloco
+    varredura.proximo = fim + 1;
+
+    // Se terminou a faixa, recomeçar (IDs novos podem aparecer no futuro)
+    if (varredura.proximo > varredura.fim) {
+      varredura.proximo = 16880000;
+      logger.scraper('Varredura completa — reiniciando do início');
+    }
   }
 
-  logger.ok(`Total: ${resultados.length} jogos coletados (${descobertos.length} novos descobertos)`);
+  // Salvar banco atualizado
+  banco.jogos     = jogos;
+  banco.varredura = varredura;
+  salvarBanco(banco);
+
+  // Ordenar por data
+  resultados.sort((a, b) => {
+    const da = a.info.startDate || '';
+    const db = b.info.startDate || '';
+    return da.localeCompare(db);
+  });
+
+  logger.ok(`Total: ${resultados.length} jogos | Próxima varredura: ${varredura.proximo}`);
   return resultados;
 }
 
 async function scrapeListaJogos() { return []; }
-
 module.exports = { executarScrape, scrapeListaJogos };
