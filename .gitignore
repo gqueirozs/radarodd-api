@@ -1,1 +1,3 @@
-data/jogos_copa.json
+node_modules/
+.env
+data/
