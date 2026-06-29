@@ -1,12 +1,14 @@
-const express = require('express');
-const router = express.Router();
-const cache = require('../utils/cache');
-const logger = require('../utils/logger');
+const express  = require('express');
+const router   = express.Router();
+const cache    = require('../utils/cache');
+const logger   = require('../utils/logger');
+const mongoose = require('mongoose');
 const { executarCicloCompleto } = require('../scraper/agendador');
 
 // GET /api/status — saúde e status do scraper
 router.get('/status', (req, res) => {
   const meta = cache.getMetadata();
+  const mongoState = ['disconnected','connected','connecting','disconnecting'];
   res.json({
     ok: true,
     versao: '1.0.0',
@@ -16,6 +18,7 @@ router.get('/status', (req, res) => {
     erro: meta.erro,
     historico: meta.historico,
     uptime: process.uptime(),
+    mongodb: mongoState[mongoose.connection.readyState] || 'unknown',
   });
 });
 
