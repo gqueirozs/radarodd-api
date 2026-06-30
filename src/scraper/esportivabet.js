@@ -215,7 +215,7 @@ async function executarScrape() {
   }
 
   // Avançar cursor
-  const novoProximo = (fim + 1 > FIM) ? 16880000 : fim + 1;
+  const novoProximo = (fim + 1 > FIM) ? 16913900 : fim + 1;
   cursorMem = novoProximo;
   if (usandoMongo) await db.setCursor(novoProximo);
 

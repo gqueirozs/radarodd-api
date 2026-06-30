@@ -28,14 +28,7 @@ const JogoSchema = new mongoose.Schema({
   atualizadoEm: { type: Date, default: Date.now },
 }, { timestamps: true });
 
-const Jogo   = mongoose.models.Jogo   || mongoose.model('Jogo', JogoSchema);
-
-const CursorSchema = new mongoose.Schema({
-  _id:     { type: String, default: 'varredura' },
-  proximo: { type: Number, default: 16880000 },
-  fim:     { type: Number, default: 16990000 },
-});
-const Cursor = mongoose.models.Cursor || mongoose.model('Cursor', CursorSchema);
+const Jogo = mongoose.models.Jogo || mongoose.model('Jogo', JogoSchema);
 
 async function getJogos() {
   if (!connected) return null;
@@ -51,10 +44,22 @@ async function upsertJogo(info, odds) {
   );
 }
 
+const CursorSchema = new mongoose.Schema({
+  _id:     { type: String, default: 'varredura' },
+  proximo: { type: Number, default: 16913900 }, // próximo aos IDs reais da Copa 2026
+});
+const Cursor = mongoose.models.Cursor || mongoose.model('Cursor', CursorSchema);
+
 async function getCursor() {
   if (!connected) return null;
   let c = await Cursor.findById('varredura').lean();
-  if (!c) { await Cursor.create({ _id: 'varredura' }); c = { proximo: 16880000 }; }
+  if (!c) { await Cursor.create({ _id: 'varredura' }); c = { proximo: 16913900 }; }
+  // Correção: se o cursor salvo estiver muito abaixo dos IDs reais conhecidos, resetar
+  if (c.proximo < 16900000) {
+    await Cursor.findByIdAndUpdate('varredura', { proximo: 16913900 }, { upsert: true });
+    c = { proximo: 16913900 };
+    logger.warn('Cursor de varredura estava desatualizado — resetado para 16913900');
+  }
   return c;
 }
 
