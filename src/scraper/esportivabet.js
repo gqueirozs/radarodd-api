@@ -7,6 +7,7 @@
  */
 const logger = require('../utils/logger');
 const db     = require('../db/mongo');
+const { gerarOdds } = require('./geradorOdds');
 
 // Fallback em memória se MongoDB não disponível
 const BANCO_MEM = {
@@ -16,7 +17,7 @@ const BANCO_MEM = {
 };
 let cursorMem = 16913932;
 const FIM = 16990000;
-const BLOCO = 500, BATCH = 40;
+const BLOCO = 1500, BATCH = 60;
 
 // ── Altenar API ──────────────────────────────────────────────────────────────
 const BASE   = 'https://sb2frontend-altenar2.biahosted.com/api/widget';
@@ -165,9 +166,10 @@ async function executarScrape() {
       const ev   = await getEvento(id);
       if (!ehCopa(ev)) continue;
       const info = parsearInfo(ev, id);
-      const odds = ODDS_MANUAIS[id] || ODDS_VAZIAS();
-      // Mesclar odds salvas no banco com as manuais
-      const oddsFinal = { ...(meta.odds || ODDS_VAZIAS()), ...ODDS_MANUAIS[id] } || ODDS_VAZIAS();
+      // Prioridade: odds manuais > odds já salvas no banco (geradas antes, mantém estável) > gerar novas
+      const oddsFinal = ODDS_MANUAIS[id]
+        || (meta.odds && meta.odds.resultado && meta.odds.resultado.casa ? meta.odds : null)
+        || gerarOdds(info.nomeCasa, info.nomeFora);
       resultados.push({ info, odds: oddsFinal, coletadoEm: new Date().toISOString() });
       if (usandoMongo) await db.upsertJogo(info, oddsFinal);
       if (!BANCO_MEM[id]) BANCO_MEM[id] = { nomeCasa: info.nomeCasa, nomeFora: info.nomeFora, startDate: ev.startDate };
@@ -176,7 +178,9 @@ async function executarScrape() {
       if (meta.nomeCasa || meta.nome) {
         const nomeCasa = meta.nomeCasa || meta.nome || 'Casa';
         const nomeFora = meta.nomeFora || 'Fora';
-        const odds = meta.odds || ODDS_MANUAIS[id] || ODDS_VAZIAS();
+        const odds = ODDS_MANUAIS[id]
+          || (meta.odds && meta.odds.resultado && meta.odds.resultado.casa ? meta.odds : null)
+          || gerarOdds(nomeCasa, nomeFora);
         resultados.push({
           info: {
             id: `${nomeCasa.toLowerCase().replace(/[^a-z0-9]/g,'-')}-vs-${nomeFora.toLowerCase().replace(/[^a-z0-9]/g,'-')}`,
@@ -204,7 +208,7 @@ async function executarScrape() {
   for (const { id, ev } of novos) {
     if (jogosExistentes[id]) continue;
     const info = parsearInfo(ev, id);
-    const odds = ODDS_MANUAIS[id] || ODDS_VAZIAS();
+    const odds = ODDS_MANUAIS[id] || gerarOdds(info.nomeCasa, info.nomeFora);
     resultados.push({ info, odds, coletadoEm: new Date().toISOString() });
     BANCO_MEM[id] = { nomeCasa: info.nomeCasa, nomeFora: info.nomeFora, startDate: ev.startDate };
     if (usandoMongo) await db.upsertJogo(info, odds);
@@ -217,6 +221,8 @@ async function executarScrape() {
 
   resultados.sort((a, b) => (a.info.startDate || '').localeCompare(b.info.startDate || ''));
   logger.ok(`Total: ${resultados.length} jogos | ${novos.length} novos | próx: ${novoProximo}`);
+  resultados._cursorVarredura = novoProximo;
+  resultados._novosDescobertos = novos.length;
   return resultados;
 }
 

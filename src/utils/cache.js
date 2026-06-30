@@ -11,6 +11,7 @@ class Cache {
       status: 'idle', // idle | scraping | ok | error
       erro: null,
       historico: [], // últimas 10 atualizações
+      cursorVarredura: null,
     };
   }
 
@@ -73,6 +74,10 @@ class Cache {
 
   setTotalJogos(n) {
     this.metadata.totalJogos = n;
+  }
+
+  setCursorVarredura(c) {
+    this.metadata.cursorVarredura = c;
   }
 
   getMetadata() {

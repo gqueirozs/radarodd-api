@@ -19,6 +19,7 @@ router.get('/status', (req, res) => {
     historico: meta.historico,
     uptime: process.uptime(),
     mongodb: mongoState[mongoose.connection.readyState] || 'unknown',
+    cursorVarredura: meta.cursorVarredura,
   });
 });
 

@@ -103,9 +103,10 @@ async function executarCicloCompleto() {
     // 4. Salvar lista no cache
     cache.set('jogos:lista', jogos, 10 * 60 * 1000);
     cache.setTotalJogos(jogos.length);
+    cache.setCursorVarredura(dadosBrutos._cursorVarredura || null);
     cache.setStatus('ok');
 
-    logger.ok(`Ciclo concluído: ${jogos.length} jogos no cache`);
+    logger.ok(`Ciclo concluído: ${jogos.length} jogos no cache | novos descobertos: ${dadosBrutos._novosDescobertos || 0}`);
     return jogos;
 
   } catch (err) {
