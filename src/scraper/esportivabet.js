@@ -207,26 +207,39 @@ async function executarScrape() {
   // Complementar com jogos do banco que não vieram nesta rodada
   // (ex: jogos que já passaram da data e saíram da API ao vivo, mas ainda
   // queremos manter visíveis até o próximo ciclo de limpeza)
+  // Deduplica por confronto (id slug), não por eventId — protege contra
+  // registros antigos no banco salvos sob eventIds diferentes para o
+  // mesmo confronto (resíduo do scraper antigo por varredura de IDs).
   if (usandoMongo) {
     const jogosDB = await db.getJogos();
     if (jogosDB && jogosDB.length) {
-      const idsNaRodada = new Set(resultados.map(r => r.info.eventId));
+      const confrontosNaRodada = new Set(resultados.map(r => r.info.id));
       for (const j of jogosDB) {
-        if (!idsNaRodada.has(j.eventId) && j.nomeCasa && j.nomeFora) {
-          resultados.push({
-            info: { ...j, id: j.id || `${nomeParaId(j.nomeCasa)}-vs-${nomeParaId(j.nomeFora)}` },
-            odds: j.odds || gerarOdds(j.nomeCasa, j.nomeFora),
-            coletadoEm: j.atualizadoEm || new Date().toISOString(),
-          });
-        }
+        if (!j.nomeCasa || !j.nomeFora) continue;
+        const idConfronto = `${nomeParaId(j.nomeCasa)}-vs-${nomeParaId(j.nomeFora)}`;
+        if (confrontosNaRodada.has(idConfronto)) continue;
+        confrontosNaRodada.add(idConfronto);
+        resultados.push({
+          info: { ...j, id: idConfronto },
+          odds: j.odds || gerarOdds(j.nomeCasa, j.nomeFora),
+          coletadoEm: j.atualizadoEm || new Date().toISOString(),
+        });
       }
     }
   }
 
-  resultados.sort((a, b) => (a.info.startDate || '').localeCompare(b.info.startDate || ''));
-  logger.ok(`Total: ${resultados.length} jogos da Copa do Mundo 2026`);
-  resultados._novosDescobertos = eventos.length;
-  return resultados;
+  // Dedup final de segurança por confronto (caso a API retorne duplicatas)
+  const vistos = new Set();
+  const resultadosUnicos = [];
+  for (const r of resultados) {
+    if (vistos.has(r.info.id)) continue;
+    vistos.add(r.info.id);
+    resultadosUnicos.push(r);
+  }
+  resultadosUnicos.sort((a, b) => (a.info.startDate || '').localeCompare(b.info.startDate || ''));
+  logger.ok(`Total: ${resultadosUnicos.length} jogos da Copa do Mundo 2026`);
+  resultadosUnicos._novosDescobertos = eventos.length;
+  return resultadosUnicos;
 }
 
 async function scrapeListaJogos() { return []; }
