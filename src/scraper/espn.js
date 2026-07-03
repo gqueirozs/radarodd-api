@@ -271,8 +271,42 @@ async function eventoDetalhes(eventoId, liga = 'fifa.world') {
   const arbitros = (json?.gameInfo?.officials || [])
     .map(o => o.displayName || o.fullName).filter(Boolean);
 
+  // ── Estado do jogo + placar (header do summary) ──────────────────
+  const compHeader = json?.header?.competitions?.[0] || {};
+  const stHeader = compHeader?.status?.type || {};
+  const status = stHeader.completed ? 'encerrado' : (stHeader.state === 'in' ? 'ao-vivo' : 'agendado');
+  const compCasa = (compHeader.competitors || []).find(c => c.homeAway === 'home');
+  const compFora = (compHeader.competitors || []).find(c => c.homeAway === 'away');
+  const casaId = String(compCasa?.team?.id ?? compCasa?.id ?? '');
+  const foraId = String(compFora?.team?.id ?? compFora?.id ?? '');
+
+  // ── Lances: gols e cartões (keyEvents) ───────────────────────────
+  const gols = [];
+  const cartoes = [];
+  for (const ke of (json.keyEvents || [])) {
+    const texto = ((ke.type?.text || '') + ' ' + (ke.text || '')).toLowerCase();
+    const jogador = ke.participants?.[0]?.athlete?.displayName || null;
+    const minuto  = ke.clock?.displayValue || '';
+    const timeId  = String(ke.team?.id || '');
+    if (/goal|gol|p.nalti convertido/.test(texto) && !/perdido|missed|anulado|disallowed/.test(texto)) {
+      gols.push({ jogador, minuto, timeId, contra: /own|contra/.test(texto), penalti: /penalty|p.nalti/.test(texto) });
+    } else if (/yellow|amarelo/.test(texto)) {
+      cartoes.push({ tipo: 'amarelo', jogador, minuto, timeId });
+    } else if (/red|vermelho/.test(texto)) {
+      cartoes.push({ tipo: 'vermelho', jogador, minuto, timeId });
+    }
+  }
+
   const det = {
     ok: true,
+    status,
+    relogio: status === 'ao-vivo' ? (stHeader.detail || compHeader?.status?.displayClock || '') : null,
+    placar: status === 'agendado' ? null : {
+      casa: Number(compCasa?.score ?? 0),
+      fora: Number(compFora?.score ?? 0),
+    },
+    casaId, foraId,
+    gols, cartoes,
     local,
     arbitros,
     escalacoes: rosters.length === 2 ? {
@@ -281,9 +315,12 @@ async function eventoDetalhes(eventoId, liga = 'fifa.world') {
     } : null,
   };
 
-  // Escalações mudam até ~1h antes do jogo: cache curto sem escalação,
-  // mais longo quando já saiu
-  cache.set(key, det, det.escalacoes ? 30 * 60 * 1000 : 5 * 60 * 1000);
+  // TTL: ao vivo 45s (placar/lances fresquinhos); encerrado 24h;
+  // agendado 5 min sem escalação, 30 min com escalação publicada
+  const ttl = status === 'ao-vivo' ? 45 * 1000
+    : status === 'encerrado' ? 24 * 60 * 60 * 1000
+    : det.escalacoes ? 30 * 60 * 1000 : 5 * 60 * 1000;
+  cache.set(key, det, ttl);
   return det;
 }
 
