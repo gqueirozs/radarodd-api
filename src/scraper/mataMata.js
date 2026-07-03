@@ -55,8 +55,12 @@ function faseDoEvento(ev) {
   for (const [re, fase] of NOTAS_FASE) {
     if (re.test(junto)) return fase;
   }
-  // 2) janela de datas
-  const dia = (ev.date || '').slice(0, 10);
+  // 2) janela de datas — SEMPRE no fuso de Brasília (22:30 BRT já é
+  //    o dia seguinte em UTC e classificava o jogo na fase errada)
+  const dt = new Date(ev.date || 0);
+  const dia = Number.isNaN(dt.getTime())
+    ? (ev.date || '').slice(0, 10)
+    : dt.toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
   for (const j of JANELAS) {
     if (dia >= j.ini && dia <= j.fim) return j.fase;
   }
@@ -158,12 +162,15 @@ async function obterChaveamento() {
     anexarOdds(fase);
   }
 
+  const chaves = montarChaves(fases);
+
   const temAoVivo = Object.values(fases).some(f => f.some(j => j.status === 'ao-vivo'));
   const resp = {
     ok: true,
     fonte: 'ESPN',
     atualizadoEm: new Date().toISOString(),
     fases,
+    chaves,
     totais: Object.fromEntries(Object.entries(fases).map(([k, v]) => [k, v.length])),
   };
 
@@ -212,6 +219,120 @@ async function anexarStatusReal(jogos) {
     };
   }
   return jogos;
+}
+
+/* ── Montagem das 2 chaves (árvore do bracket) ────────────────────
+ * A ESPN numera os confrontos nos placeholders:
+ *   "Vencedor 14 dos 16avos"        → alimentado pelo jogo 14 da 2ª rodada
+ *   "Vencedor oitavas de final (5)" → alimentado pelas oitavas 5
+ *   "Vencedor quartas de final (1)" → alimentado pelas quartas 1
+ * Numeração oficial: Q(k) recebe O(2k-1) e O(2k); Semi(m) recebe
+ * Q(2m-1) e Q(2m). Chave A = árvore da Semi 1; Chave B = Semi 2.
+ * Onde os times já estão definidos, ligamos pelo vencedor real.
+ */
+function refsDoJogo(jogo) {
+  const refs = [];
+  for (const lado of [jogo.casa, jogo.fora]) {
+    const n = lado?.nome || '';
+    let m = n.match(/\((\d+)\)/);
+    if (!m) m = n.match(/(\d+)\s+dos\s+16/i);
+    if (m) refs.push(+m[1]);
+  }
+  return refs;
+}
+
+const ehDefinido = nome => nome && nome !== 'A definir' && !/vencedor|perdedor|winner|loser|\d+ dos/i.test(nome);
+
+function montarChaves(fases) {
+  const porData = f => [...(fases[f] || [])].sort((a, b) => new Date(a.data) - new Date(b.data));
+  const segunda = porData('segunda');
+  const oitavas = porData('oitavas');
+  const quartas = porData('quartas');
+  const semis   = porData('semis');
+
+  // Índice oficial: 2ª rodada e oitavas seguem a ordem do calendário
+  segunda.forEach((j, i) => { j.ordem = i + 1; });
+  oitavas.forEach((j, i) => { j.ordem = i + 1; });
+
+  // Quartas: índice deduzido das oitavas que a alimentam (refs), senão pela data
+  quartas.forEach((j, i) => {
+    const refs = refsDoJogo(j).filter(n => n >= 1 && n <= 8);
+    j.feeds = refs.length ? refs : [2 * (i + 1) - 1, 2 * (i + 1)];
+    j.ordem = Math.ceil(Math.min(...j.feeds) / 2);
+  });
+  quartas.sort((a, b) => a.ordem - b.ordem);
+
+  // Semis: idem, a partir das quartas
+  semis.forEach((j, i) => {
+    const refs = refsDoJogo(j).filter(n => n >= 1 && n <= 4);
+    j.feeds = refs.length ? refs : [2 * (i + 1) - 1, 2 * (i + 1)];
+    j.ordem = Math.ceil(Math.min(...j.feeds) / 2);
+  });
+  semis.sort((a, b) => a.ordem - b.ordem);
+
+  // 2ª rodada → oitavas: primeiro pelo vencedor real, depois pelo nº do placeholder
+  const usados = new Set();
+  const alimentadores = new Map(); // ordemOitavas → [jogoSegunda|null, jogoSegunda|null]
+  for (const o of oitavas) {
+    const feeds = [null, null];
+    [o.casa, o.fora].forEach((lado, idx) => {
+      if (ehDefinido(lado?.nome)) {
+        const alvo = nomeParaIdLocal(lado.nome);
+        const g = segunda.find(sg => !usados.has(sg.eventoId) && sg.status === 'encerrado' &&
+          nomeParaIdLocal((sg.casa.vencedor ? sg.casa : sg.fora.vencedor ? sg.fora : {}).nome) === alvo);
+        if (g) { feeds[idx] = g; usados.add(g.eventoId); }
+      } else {
+        const m = (lado?.nome || '').match(/(\d+)/);
+        if (m) {
+          const g = segunda.find(sg => sg.ordem === +m[1] && !usados.has(sg.eventoId));
+          if (g) { feeds[idx] = g; usados.add(g.eventoId); }
+        }
+      }
+    });
+    alimentadores.set(o.ordem, feeds);
+  }
+  // Sobras (sem link possível): distribui pela numeração O(k) ← S(2k-1),S(2k)
+  for (const sg of segunda) {
+    if (usados.has(sg.eventoId)) continue;
+    const alvo = Math.ceil(sg.ordem / 2);
+    const feeds = alimentadores.get(alvo);
+    if (feeds) {
+      const vaga = feeds[0] == null ? 0 : feeds[1] == null ? 1 : -1;
+      if (vaga >= 0) { feeds[vaga] = sg; usados.add(sg.eventoId); }
+    }
+  }
+
+  const montarChave = (nome, semi) => {
+    const qs = semi ? quartas.filter(q => (semi.feeds || []).includes(q.ordem)) : [];
+    const os = [];
+    for (const q of qs) for (const f of q.feeds) {
+      const o = oitavas.find(x => x.ordem === f);
+      os.push(o || null);
+    }
+    while (os.length < 4) os.push(null);
+    const sg = [];
+    for (const o of os) {
+      const feeds = o ? (alimentadores.get(o.ordem) || [null, null]) : [null, null];
+      sg.push(feeds[0], feeds[1]);
+    }
+    return {
+      nome,
+      semi: semi || null,
+      quartas: qs.length ? qs : [null, null],
+      oitavas: os.slice(0, 4),
+      segunda: sg.slice(0, 8),
+    };
+  };
+
+  return [
+    montarChave('Chave A', semis[0] || null),
+    montarChave('Chave B', semis[1] || null),
+  ];
+}
+
+// normalização local leve (evita import circular com utils/slug em runtime)
+function nomeParaIdLocal(nome) {
+  return (nome || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-');
 }
 
 module.exports = { obterChaveamento, anexarStatusReal };
