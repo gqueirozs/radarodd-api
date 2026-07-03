@@ -5,6 +5,7 @@ const db     = require('../db/mongo');
 const { executarScrape } = require('./esportivabet');
 const { parseJogo }       = require('../utils/parser');
 const { nomeParaId, confrontoId } = require('../utils/slug');
+const { ordenarJogosDesc } = require('../utils/datas');
 
 let scrapeEmAndamento = false;
 
@@ -84,8 +85,8 @@ async function executarCicloCompleto() {
     //     garantindo que resíduos nunca voltem a se acumular.
     db.limparOrfaos().catch(err => logger.warn(`Autolimpeza falhou: ${err.message}`));
 
-    // Ordenar por data
-    jogos.sort((a, b) => (a.startDate || a.data || '').localeCompare(b.startDate || b.data || ''));
+    // Ordenar por data/hora real: mais recente primeiro
+    ordenarJogosDesc(jogos);
 
     // 4. Salvar lista no cache
     cache.set('jogos:lista', jogos, 10 * 60 * 1000);

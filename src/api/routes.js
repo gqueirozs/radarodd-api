@@ -4,6 +4,7 @@ const cache    = require('../utils/cache');
 const logger   = require('../utils/logger');
 const mongoose = require('mongoose');
 const { executarCicloCompleto } = require('../scraper/agendador');
+const { ordenarJogosDesc } = require('../utils/datas');
 
 // GET /api/status — saúde e status do scraper
 router.get('/status', (req, res) => {
@@ -53,12 +54,8 @@ router.get('/jogos', (req, res) => {
     );
   }
 
-  // Ordenar por data/hora
-  resultado.sort((a, b) => {
-    const da = `${a.data} ${a.hora}`;
-    const db = `${b.data} ${b.hora}`;
-    return da.localeCompare(db);
-  });
+  // Ordenar por data/hora real: mais recente primeiro
+  ordenarJogosDesc(resultado);
 
   res.json({
     ok: true,
