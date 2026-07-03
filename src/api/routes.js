@@ -25,7 +25,7 @@ router.get('/status', (req, res) => {
 });
 
 // GET /api/jogos — lista todos os jogos disponíveis
-router.get('/jogos', (req, res) => {
+router.get('/jogos', async (req, res) => {
   const jogos = cache.get('jogos:lista');
 
   if (!jogos) {
@@ -57,6 +57,14 @@ router.get('/jogos', (req, res) => {
   // Ordenar por data/hora real: mais recente primeiro
   ordenarJogosDesc(resultado);
 
+  // Anotar status real (encerrado/ao-vivo) e placar via ESPN
+  try {
+    const mataMata = require('../scraper/mataMata');
+    await mataMata.anexarStatusReal(resultado);
+  } catch (e) {
+    logger.warn(`Status real indisponível: ${e.message}`);
+  }
+
   res.json({
     ok: true,
     total: resultado.length,
@@ -66,7 +74,7 @@ router.get('/jogos', (req, res) => {
 });
 
 // GET /api/jogos/:id — odds completas de um jogo específico
-router.get('/jogos/:id', (req, res) => {
+router.get('/jogos/:id', async (req, res) => {
   const { id } = req.params;
   const jogo = cache.get(`jogo:${id}`);
 

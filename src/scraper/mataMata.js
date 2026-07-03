@@ -172,4 +172,42 @@ async function obterChaveamento() {
   return resp;
 }
 
-module.exports = { obterChaveamento };
+/**
+ * Anota jogos da nossa API (Altenar) com o status real vindo da ESPN:
+ * statusReal ('agendado'|'ao-vivo'|'encerrado'), placar e relógio.
+ * Usa o cache do chaveamento — custo praticamente zero.
+ */
+async function anexarStatusReal(jogos) {
+  if (!Array.isArray(jogos) || jogos.length === 0) return jogos;
+  let chave;
+  try {
+    chave = await obterChaveamento();
+  } catch { return jogos; }
+  if (!chave?.fases) return jogos;
+
+  const porSlug = new Map();
+  for (const fase of Object.values(chave.fases)) {
+    for (const ev of fase) {
+      const key = confrontoId(ev.casa.nome, ev.fora.nome);
+      porSlug.set(key, ev);
+      porSlug.set(confrontoId(ev.fora.nome, ev.casa.nome), { ...ev, invertido: true });
+    }
+  }
+
+  for (const j of jogos) {
+    const ev = porSlug.get(confrontoId(j.casa?.nome, j.fora?.nome));
+    if (!ev || ev.status === 'agendado') continue;
+    const casa = ev.invertido ? ev.fora : ev.casa;
+    const fora = ev.invertido ? ev.casa : ev.fora;
+    j.statusReal = ev.status;
+    j.relogio = ev.relogio || null;
+    j.prorrogacao = !!ev.prorrogacao;
+    j.placar = {
+      casa: casa.placar, fora: fora.placar,
+      penaltisCasa: casa.penaltis, penaltisFora: fora.penaltis,
+    };
+  }
+  return jogos;
+}
+
+module.exports = { obterChaveamento, anexarStatusReal };
