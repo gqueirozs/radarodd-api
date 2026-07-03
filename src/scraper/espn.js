@@ -1,0 +1,237 @@
+/**
+ * Estatísticas reais via API pública da ESPN (sem chave).
+ *
+ * Endpoints usados:
+ *  - Times da Copa:  site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/teams
+ *  - Agenda do time: site.api.espn.com/apis/site/v2/sports/soccer/{liga}/teams/{id}/schedule?season=YYYY
+ *  - Detalhe do jogo: site.api.espn.com/apis/site/v2/sports/soccer/{liga}/summary?event={id}
+ *    (traz keyEvents com gols/cartões e boxscore com faltas etc.)
+ *
+ * Tudo com cache agressivo em memória — jogo encerrado não muda.
+ */
+const cache  = require('../utils/cache');
+const logger = require('../utils/logger');
+const { nomeParaId } = require('../utils/slug');
+
+const BASE = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
+const LIGAS = ['fifa.world', 'fifa.friendly']; // Copa + amistosos
+const TEMPORADAS = [2026, 2025];
+const HEADERS = { 'User-Agent': 'Mozilla/5.0 (SinalOdds/1.0)', 'Accept': 'application/json' };
+
+// Aliases pt-BR → possíveis slugs da ESPN (pt e en)
+const ALIASES = {
+  'estados-unidos': ['usa', 'united-states', 'eua'],
+  'rd-congo':       ['republica-democratica-do-congo', 'dr-congo', 'congo-dr'],
+  'costa-do-marfim':['ivory-coast', 'cote-d-ivoire'],
+  'cabo-verde':     ['cape-verde-islands', 'cape-verde'],
+  'coreia-do-sul':  ['south-korea'],
+  'irlanda-do-norte': ['northern-ireland'],
+  'arabia-saudita': ['saudi-arabia'],
+};
+
+async function fetchJson(url) {
+  const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(10000) });
+  if (!res.ok) throw new Error(`ESPN ${res.status} em ${url}`);
+  return res.json();
+}
+
+/* ── Mapa nome → teamId ──────────────────────────────────────────── */
+async function mapaTimes() {
+  const hit = cache.get('espn:times');
+  if (hit) return hit;
+
+  const mapa = new Map(); // slug → { id, nome }
+  for (const lang of ['pt', 'en']) {
+    try {
+      const json = await fetchJson(`${BASE}/fifa.world/teams?limit=200&lang=${lang}&region=${lang === 'pt' ? 'br' : 'us'}`);
+      const times = json?.sports?.[0]?.leagues?.[0]?.teams || [];
+      for (const t of times) {
+        const team = t.team || {};
+        for (const nome of [team.displayName, team.name, team.shortDisplayName, team.location]) {
+          const slug = nomeParaId(nome);
+          if (slug && !mapa.has(slug)) mapa.set(slug, { id: String(team.id), nome: team.displayName });
+        }
+      }
+    } catch (e) {
+      logger.warn(`ESPN mapa de times (${lang}) falhou: ${e.message}`);
+    }
+  }
+  if (mapa.size > 0) cache.set('espn:times', mapa, 24 * 60 * 60 * 1000);
+  return mapa;
+}
+
+async function acharTime(nome) {
+  const mapa = await mapaTimes();
+  const slug = nomeParaId(nome);
+  if (mapa.has(slug)) return mapa.get(slug);
+  for (const alias of (ALIASES[slug] || [])) {
+    if (mapa.has(alias)) return mapa.get(alias);
+  }
+  // busca parcial (ex: "Bósnia" vs "Bósnia e Herzegovina")
+  for (const [k, v] of mapa) {
+    if (k.includes(slug) || slug.includes(k)) return v;
+  }
+  return null;
+}
+
+/* ── Resultados recentes de um time ──────────────────────────────── */
+function parseEvento(ev, teamId, liga) {
+  const comp = ev?.competitions?.[0] || ev;
+  const lados = comp?.competitors || [];
+  const eu   = lados.find(c => String(c.team?.id ?? c.id) === String(teamId));
+  const ele  = lados.find(c => String(c.team?.id ?? c.id) !== String(teamId));
+  if (!eu || !ele) return null;
+
+  const done = (ev?.status?.type?.completed) ?? (comp?.status?.type?.completed) ?? false;
+  if (!done) return null;
+
+  const gEu  = Number(eu.score?.value ?? eu.score ?? NaN);
+  const gEle = Number(ele.score?.value ?? ele.score ?? NaN);
+  if (Number.isNaN(gEu) || Number.isNaN(gEle)) return null;
+
+  return {
+    eventoId:   String(ev.id),
+    liga,
+    data:       ev.date,
+    competicao: ev?.season?.slug || ev?.league?.name || (liga === 'fifa.world' ? 'Copa do Mundo' : 'Amistoso internacional'),
+    adversario: ele.team?.displayName || ele.team?.name || '?',
+    adversarioId: String(ele.team?.id ?? ele.id),
+    golsPro:    gEu,
+    golsContra: gEle,
+    resultado:  gEu > gEle ? 'V' : gEu < gEle ? 'D' : 'E',
+    emCasa:     eu.homeAway === 'home',
+  };
+}
+
+async function resultadosTime(teamId) {
+  const key = `espn:resultados:${teamId}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+
+  const eventos = [];
+  for (const liga of LIGAS) {
+    for (const season of TEMPORADAS) {
+      try {
+        const json = await fetchJson(`${BASE}/${liga}/teams/${teamId}/schedule?season=${season}&lang=pt&region=br`);
+        for (const ev of (json.events || [])) {
+          const p = parseEvento(ev, teamId, liga);
+          if (p) eventos.push(p);
+        }
+      } catch { /* liga/temporada sem dados para esse time — normal */ }
+    }
+  }
+
+  // Dedup por eventoId, mais recente primeiro
+  const vistos = new Set();
+  const unicos = eventos.filter(e => !vistos.has(e.eventoId) && vistos.add(e.eventoId));
+  unicos.sort((a, b) => new Date(b.data) - new Date(a.data));
+
+  cache.set(key, unicos, 6 * 60 * 60 * 1000);
+  return unicos;
+}
+
+/* ── Detalhes de um jogo (gols, cartões, faltas) ─────────────────── */
+function extrairEstatistica(boxTeam, nomes) {
+  for (const n of nomes) {
+    const st = (boxTeam?.statistics || []).find(s => (s.name || '').toLowerCase() === n);
+    if (st) return st.displayValue ?? st.value;
+  }
+  return null;
+}
+
+async function detalhesJogo(eventoId, liga) {
+  const key = `espn:detalhe:${eventoId}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+
+  try {
+    const json = await fetchJson(`${BASE}/${liga}/summary?event=${eventoId}&lang=pt&region=br`);
+
+    const gols = [];
+    const cartoes = [];
+    for (const ke of (json.keyEvents || [])) {
+      const tipo = (ke.type?.id || ke.type?.text || '').toString().toLowerCase();
+      const texto = (ke.type?.text || '').toLowerCase();
+      const jogador = ke.participants?.[0]?.athlete?.displayName || null;
+      const minuto  = ke.clock?.displayValue || '';
+      const timeId  = String(ke.team?.id || '');
+      if (texto.includes('goal') || texto.includes('gol') || tipo === '70' || tipo === '137' || tipo === '98') {
+        if (!texto.includes('own') || true) gols.push({ jogador, minuto, timeId, contra: texto.includes('own') || texto.includes('contra') });
+      } else if (texto.includes('yellow') || texto.includes('amarelo')) {
+        cartoes.push({ tipo: 'amarelo', jogador, minuto, timeId });
+      } else if (texto.includes('red') || texto.includes('vermelho')) {
+        cartoes.push({ tipo: 'vermelho', jogador, minuto, timeId });
+      }
+    }
+
+    const faltas = {};
+    for (const bt of (json.boxscore?.teams || [])) {
+      const tid = String(bt.team?.id || '');
+      faltas[tid] = {
+        faltas:     extrairEstatistica(bt, ['foulscommitted', 'fouls']),
+        escanteios: extrairEstatistica(bt, ['wonCorners'.toLowerCase(), 'cornerkicks', 'corners']),
+        posse:      extrairEstatistica(bt, ['possessionpct', 'possession']),
+        chutesGol:  extrairEstatistica(bt, ['shotsongoal', 'shotsontarget']),
+      };
+    }
+
+    const det = { gols, cartoes, faltas };
+    cache.set(key, det, 24 * 60 * 60 * 1000); // jogo encerrado não muda
+    return det;
+  } catch (e) {
+    logger.warn(`ESPN detalhe ${eventoId} falhou: ${e.message}`);
+    return null;
+  }
+}
+
+/* ── Confronto completo: últimos jogos de cada time + H2H ────────── */
+async function confronto(nomeCasa, nomeFora) {
+  const key = `espn:confronto:${nomeParaId(nomeCasa)}:${nomeParaId(nomeFora)}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+
+  const [tCasa, tFora] = await Promise.all([acharTime(nomeCasa), acharTime(nomeFora)]);
+  if (!tCasa && !tFora) return { ok: false, mensagem: 'Times não encontrados na ESPN' };
+
+  const [rCasa, rFora] = await Promise.all([
+    tCasa ? resultadosTime(tCasa.id) : [],
+    tFora ? resultadosTime(tFora.id) : [],
+  ]);
+
+  // H2H: jogos da casa contra o id do visitante (e vice-versa como reserva)
+  const h2hBase = tCasa && tFora
+    ? rCasa.filter(j => j.adversarioId === tFora.id)
+    : [];
+
+  // Enriquecer com detalhes: H2H completo + 3 últimos de cada time
+  const paraDetalhar = [
+    ...h2hBase,
+    ...rCasa.slice(0, 3),
+    ...rFora.slice(0, 3),
+  ];
+  const vistos = new Set();
+  await Promise.all(paraDetalhar.map(async j => {
+    if (vistos.has(j.eventoId)) return;
+    vistos.add(j.eventoId);
+    j.detalhes = await detalhesJogo(j.eventoId, j.liga);
+  }));
+
+  const resp = {
+    ok: true,
+    fonte: 'ESPN',
+    casa: tCasa ? { nome: nomeCasa, espnId: tCasa.id, ultimos: rCasa.slice(0, 6) } : null,
+    fora: tFora ? { nome: nomeFora, espnId: tFora.id, ultimos: rFora.slice(0, 6) } : null,
+    h2h: h2hBase,
+    resumoH2H: {
+      vitoriasCasa: h2hBase.filter(j => j.resultado === 'V').length,
+      empates:      h2hBase.filter(j => j.resultado === 'E').length,
+      vitoriasFora: h2hBase.filter(j => j.resultado === 'D').length,
+      total:        h2hBase.length,
+    },
+  };
+
+  cache.set(key, resp, 6 * 60 * 60 * 1000);
+  return resp;
+}
+
+module.exports = { confronto, acharTime };

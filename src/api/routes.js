@@ -164,6 +164,23 @@ router.post('/admin/limpar', exigirAdmin, async (req, res) => {
   });
 });
 
+// GET /api/confronto?casa=X&fora=Y — estatísticas reais (ESPN): últimos
+// jogos de cada seleção, confronto direto, gols, cartões e faltas
+router.get('/confronto', async (req, res) => {
+  const { casa, fora } = req.query;
+  if (!casa || !fora) {
+    return res.status(400).json({ ok: false, mensagem: 'Parâmetros casa e fora são obrigatórios' });
+  }
+  try {
+    const espn = require('../scraper/espn');
+    const dados = await espn.confronto(casa, fora);
+    res.json(dados);
+  } catch (err) {
+    logger.error(`Confronto ${casa} x ${fora} falhou: ${err.message}`);
+    res.status(502).json({ ok: false, mensagem: 'Falha ao buscar estatísticas na ESPN' });
+  }
+});
+
 // GET /api/value-bets — todos os value bets de todos os jogos ordenados por EV
 router.get('/value-bets', (req, res) => {
   const jogos = cache.get('jogos:lista') || [];
