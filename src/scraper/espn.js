@@ -250,6 +250,47 @@ function parseRoster(r) {
   };
 }
 
+const ESTATS_PARTIDA = [
+  { label: 'Chutes',            nomes: ['totalshots', 'shots', 'shotsattempted'] },
+  { label: 'Chutes a gol',      nomes: ['shotsontarget', 'shotsongoal'] },
+  { label: 'Posse de bola',     nomes: ['possessionpct', 'possession'], sufixo: '%' },
+  { label: 'Passes',            nomes: ['totalpasses', 'passes', 'passesattempted'] },
+  { label: 'Precisão de passe', nomes: ['passpct', 'passcompletionpct', 'accuratepasspct'], sufixo: '%' },
+  { label: 'Faltas',            nomes: ['foulscommitted', 'fouls'] },
+  { label: 'Cartões amarelos',  nomes: ['yellowcards'] },
+  { label: 'Cartões vermelhos', nomes: ['redcards'] },
+  { label: 'Impedimentos',      nomes: ['offsides'] },
+  { label: 'Escanteios',        nomes: ['woncorners', 'cornerkicks', 'corners'] },
+  { label: 'Defesas',           nomes: ['saves', 'goalkeepersaves'] },
+];
+
+function estatisticasDaPartida(boxscore, casaId, foraId) {
+  const times = boxscore?.teams || [];
+  const porId = {};
+  for (const bt of times) porId[String(bt.team?.id || '')] = bt;
+  const btCasa = porId[casaId];
+  const btFora = porId[foraId];
+  if (!btCasa && !btFora) return [];
+
+  const pegar = (bt, nomes) => {
+    for (const n of nomes) {
+      const st = (bt?.statistics || []).find(x => (x.name || '').toLowerCase() === n);
+      if (st) return st.displayValue ?? st.value ?? null;
+    }
+    return null;
+  };
+
+  const linhas = [];
+  for (const e of ESTATS_PARTIDA) {
+    const c = pegar(btCasa, e.nomes);
+    const f = pegar(btFora, e.nomes);
+    if (c != null || f != null) {
+      linhas.push({ label: e.label, casa: c, fora: f, sufixo: e.sufixo || '' });
+    }
+  }
+  return linhas;
+}
+
 async function eventoDetalhes(eventoId, liga = 'fifa.world') {
   const key = `espn:evento:${eventoId}`;
   const hit = cache.get(key);
@@ -307,6 +348,7 @@ async function eventoDetalhes(eventoId, liga = 'fifa.world') {
     },
     casaId, foraId,
     gols, cartoes,
+    estatisticas: status === 'agendado' ? [] : estatisticasDaPartida(json.boxscore, casaId, foraId),
     local,
     arbitros,
     escalacoes: rosters.length === 2 ? {
