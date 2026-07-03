@@ -4,7 +4,7 @@ const cache    = require('../utils/cache');
 const logger   = require('../utils/logger');
 const mongoose = require('mongoose');
 const { executarCicloCompleto } = require('../scraper/agendador');
-const { ordenarJogosDesc } = require('../utils/datas');
+const { ordenarJogosDesc, normalizarDataHora } = require('../utils/datas');
 
 // GET /api/status — saúde e status do scraper
 router.get('/status', (req, res) => {
@@ -53,6 +53,9 @@ router.get('/jogos', async (req, res) => {
       j.fora?.nome?.toLowerCase().includes(time)
     );
   }
+
+  // Corrigir data/hora pro fuso de Brasília (registros antigos vieram em UTC)
+  normalizarDataHora(resultado);
 
   // Ordenar por data/hora real: mais recente primeiro
   ordenarJogosDesc(resultado);

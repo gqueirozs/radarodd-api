@@ -26,4 +26,17 @@ function ordenarJogosDesc(jogos) {
   return jogos.sort((a, b) => timestampJogo(b) - timestampJogo(a));
 }
 
-module.exports = { timestampJogo, ordenarJogosDesc };
+// Recalcula data/hora (fuso de Brasília) a partir do startDate ISO.
+// Corrige registros antigos gravados com hora UTC.
+function normalizarDataHora(jogos) {
+  for (const j of jogos) {
+    if (!j || !j.startDate) continue;
+    const d = new Date(j.startDate);
+    if (Number.isNaN(d.getTime())) continue;
+    j.data = d.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    j.hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+  }
+  return jogos;
+}
+
+module.exports = { timestampJogo, ordenarJogosDesc, normalizarDataHora };
