@@ -355,7 +355,7 @@ async function eventoDetalhes(eventoId, liga = 'fifa.world') {
     ok: true,
     status,
     probAoVivo,
-    relogio: status === 'ao-vivo' ? (stHeader.detail || compHeader?.status?.displayClock || '') : null,
+    relogio: status === 'ao-vivo' ? (compHeader?.status?.displayClock || stHeader.detail || '') : null,
     placar: status === 'agendado' ? null : {
       casa: Number(compCasa?.score ?? 0),
       fora: Number(compFora?.score ?? 0),
@@ -373,7 +373,7 @@ async function eventoDetalhes(eventoId, liga = 'fifa.world') {
 
   // TTL: ao vivo 45s (placar/lances fresquinhos); encerrado 24h;
   // agendado 5 min sem escalação, 30 min com escalação publicada
-  const ttl = status === 'ao-vivo' ? 45 * 1000
+  const ttl = status === 'ao-vivo' ? 30 * 1000
     : status === 'encerrado' ? 24 * 60 * 60 * 1000
     : det.escalacoes ? 30 * 60 * 1000 : 5 * 60 * 1000;
   cache.set(key, det, ttl);

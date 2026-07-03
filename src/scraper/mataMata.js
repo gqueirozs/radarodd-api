@@ -90,7 +90,7 @@ function parseEventoBracket(ev) {
     fase:     faseDoEvento(ev),
     data:     ev.date,
     status,
-    relogio:  status === 'ao-vivo' ? (st.detail || ev?.status?.displayClock || '') : null,
+    relogio:  status === 'ao-vivo' ? (ev?.status?.displayClock || comp?.status?.displayClock || st.detail || '') : null,
     prorrogacao: /aet|prorroga/i.test(st.detail || st.description || ''),
     casa: lado(casa),
     fora: lado(fora),
