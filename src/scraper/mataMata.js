@@ -196,7 +196,11 @@ async function anexarStatusReal(jogos) {
 
   for (const j of jogos) {
     const ev = porSlug.get(confrontoId(j.casa?.nome, j.fora?.nome));
-    if (!ev || ev.status === 'agendado') continue;
+    if (!ev) continue;
+    // eventoId/liga sempre — permite buscar escalações e local no Analisador
+    j.eventoId = ev.eventoId;
+    j.ligaEspn = 'fifa.world';
+    if (ev.status === 'agendado') continue;
     const casa = ev.invertido ? ev.fora : ev.casa;
     const fora = ev.invertido ? ev.casa : ev.fora;
     j.statusReal = ev.status;

@@ -234,4 +234,57 @@ async function confronto(nomeCasa, nomeFora) {
   return resp;
 }
 
-module.exports = { confronto, acharTime };
+/* ── Detalhes de um evento: local, escalações e banco ────────────── */
+function parseRoster(r) {
+  const jogador = it => ({
+    nome:    it.athlete?.displayName || it.athlete?.fullName || '?',
+    numero:  it.jersey ?? it.athlete?.jersey ?? null,
+    posicao: it.position?.abbreviation || it.athlete?.position?.abbreviation || '',
+  });
+  const itens = r?.roster || [];
+  return {
+    time:      r?.team?.displayName || '',
+    formacao:  r?.formation || null,
+    titulares: itens.filter(i => i.starter === true).map(jogador),
+    banco:     itens.filter(i => i.starter !== true).map(jogador),
+  };
+}
+
+async function eventoDetalhes(eventoId, liga = 'fifa.world') {
+  const key = `espn:evento:${eventoId}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+
+  const json = await fetchJson(`${BASE}/${liga}/summary?event=${eventoId}&lang=pt&region=br`);
+
+  const venue = json?.gameInfo?.venue || {};
+  const local = {
+    estadio: venue.fullName || null,
+    cidade:  venue.address?.city || null,
+    pais:    venue.address?.country || null,
+  };
+
+  const rosters = (json?.rosters || []).map(parseRoster)
+    .filter(r => r.titulares.length > 0 || r.banco.length > 0);
+  const casaRoster = (json?.rosters || []).findIndex(r => r.homeAway === 'home');
+
+  const arbitros = (json?.gameInfo?.officials || [])
+    .map(o => o.displayName || o.fullName).filter(Boolean);
+
+  const det = {
+    ok: true,
+    local,
+    arbitros,
+    escalacoes: rosters.length === 2 ? {
+      casa: casaRoster === 1 ? rosters[1] : rosters[0],
+      fora: casaRoster === 1 ? rosters[0] : rosters[1],
+    } : null,
+  };
+
+  // Escalações mudam até ~1h antes do jogo: cache curto sem escalação,
+  // mais longo quando já saiu
+  cache.set(key, det, det.escalacoes ? 30 * 60 * 1000 : 5 * 60 * 1000);
+  return det;
+}
+
+module.exports = { confronto, acharTime, eventoDetalhes };

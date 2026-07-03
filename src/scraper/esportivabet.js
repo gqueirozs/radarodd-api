@@ -132,8 +132,10 @@ function parsearEvento(ev, compMap, oddsMap) {
   let data = '--/--', hora = '--:--';
   if (ev.startDate) {
     const d = new Date(ev.startDate);
-    data = d.toLocaleDateString('pt-BR');
-    hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    // Railway roda em UTC — sem timeZone a hora sai 3h adiantada e
+    // jogos noturnos pulam pro dia seguinte
+    data = d.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
   }
 
   const odds = extrairOddsDoEvento(ev, ev._json, ev._oddsMap);

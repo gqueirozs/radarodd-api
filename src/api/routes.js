@@ -201,6 +201,18 @@ router.get('/mata-mata', async (req, res) => {
   }
 });
 
+// GET /api/evento/:eventoId — local, escalações e banco (ESPN)
+router.get('/evento/:eventoId', async (req, res) => {
+  try {
+    const espn = require('../scraper/espn');
+    const liga = req.query.liga || 'fifa.world';
+    res.json(await espn.eventoDetalhes(req.params.eventoId, liga));
+  } catch (err) {
+    logger.warn(`Evento ${req.params.eventoId} falhou: ${err.message}`);
+    res.status(502).json({ ok: false, mensagem: 'Detalhes indisponíveis' });
+  }
+});
+
 // GET /api/value-bets — todos os value bets de todos os jogos ordenados por EV
 router.get('/value-bets', (req, res) => {
   const jogos = cache.get('jogos:lista') || [];
