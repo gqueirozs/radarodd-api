@@ -181,6 +181,18 @@ router.get('/confronto', async (req, res) => {
   }
 });
 
+// GET /api/mata-mata — chaveamento do mata-mata montado automaticamente
+// pela ESPN (placares reais, pênaltis, ao vivo) + nossas odds nos agendados
+router.get('/mata-mata', async (req, res) => {
+  try {
+    const mataMata = require('../scraper/mataMata');
+    res.json(await mataMata.obterChaveamento());
+  } catch (err) {
+    logger.error(`Mata-mata falhou: ${err.message}`);
+    res.status(502).json({ ok: false, mensagem: 'Falha ao montar o chaveamento' });
+  }
+});
+
 // GET /api/value-bets — todos os value bets de todos os jogos ordenados por EV
 router.get('/value-bets', (req, res) => {
   const jogos = cache.get('jogos:lista') || [];
