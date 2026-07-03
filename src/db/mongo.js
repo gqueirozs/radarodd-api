@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const logger   = require('../utils/logger');
+const { confrontoId } = require('../utils/slug');
 
 let connected = false;
 
@@ -18,6 +19,7 @@ async function conectar() {
 
 const JogoSchema = new mongoose.Schema({
   eventId:    { type: String, required: true, unique: true },
+  confrontoId:{ type: String, index: true }, // slug normalizado "australia-vs-egito"
   nomeCasa:   String, nomeFora: String,
   abbCasa:    String, abbFora:  String,
   competicao: String, fase:     String,
@@ -39,8 +41,8 @@ async function upsertJogo(info, odds) {
   if (!connected) return;
   await Jogo.findOneAndUpdate(
     { eventId: info.eventId },
-    { ...info, odds, atualizadoEm: new Date() },
-    { upsert: true, new: true }
+    { ...info, confrontoId: confrontoId(info.nomeCasa, info.nomeFora), odds, atualizadoEm: new Date() },
+    { upsert: true }
   );
 }
 
@@ -81,15 +83,44 @@ async function listarJogosDB() {
 // então qualquer doc com eventId ausente, nulo ou não-numérico é lixo.
 async function limparOrfaos() {
   if (!connected) return { ok: false, mensagem: 'MongoDB não conectado' };
-  const r = await Jogo.deleteMany({
+
+  // 1) Docs claramente inválidos: sem eventId numérico ou sem nomes
+  const r1 = await Jogo.deleteMany({
     $or: [
       { eventId: { $exists: false } },
       { eventId: null },
       { eventId: { $not: /^\d+$/ } },
+      { nomeCasa: { $in: [null, ''] } },
+      { nomeFora: { $in: [null, ''] } },
     ],
   });
-  logger.ok(`Limpeza de órfãos: ${r.deletedCount} documentos removidos`);
-  return { ok: true, removidos: r.deletedCount };
+
+  // 2) Duplicatas do MESMO confronto sob eventIds diferentes (resíduo do
+  //    scraper antigo por varredura). Agrupa pelo slug normalizado e mantém
+  //    apenas o documento mais recente de cada confronto.
+  const docs = await Jogo.find({}, { eventId: 1, nomeCasa: 1, nomeFora: 1, atualizadoEm: 1, updatedAt: 1 }).lean();
+  const porConfronto = new Map();
+  for (const d of docs) {
+    const key = confrontoId(d.nomeCasa, d.nomeFora);
+    if (!porConfronto.has(key)) porConfronto.set(key, []);
+    porConfronto.get(key).push(d);
+  }
+  const idsParaRemover = [];
+  for (const grupo of porConfronto.values()) {
+    if (grupo.length < 2) continue;
+    grupo.sort((a, b) => new Date(b.atualizadoEm || b.updatedAt || 0) - new Date(a.atualizadoEm || a.updatedAt || 0));
+    for (const dup of grupo.slice(1)) idsParaRemover.push(dup._id);
+  }
+  let r2 = { deletedCount: 0 };
+  if (idsParaRemover.length) {
+    r2 = await Jogo.deleteMany({ _id: { $in: idsParaRemover } });
+  }
+
+  const total = r1.deletedCount + r2.deletedCount;
+  if (total > 0) {
+    logger.ok(`Limpeza: ${r1.deletedCount} órfãos + ${r2.deletedCount} duplicatas removidos`);
+  }
+  return { ok: true, removidos: total, orfaos: r1.deletedCount, duplicatas: r2.deletedCount };
 }
 
 // Apaga TODOS os jogos (o scraper repopula no próximo ciclo)

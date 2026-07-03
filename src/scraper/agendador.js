@@ -4,6 +4,7 @@ const logger = require('../utils/logger');
 const db     = require('../db/mongo');
 const { executarScrape } = require('./esportivabet');
 const { parseJogo }       = require('../utils/parser');
+const { nomeParaId, confrontoId } = require('../utils/slug');
 
 let scrapeEmAndamento = false;
 
@@ -16,7 +17,7 @@ function converterParaFormato(bruto) {
     hora:       bruto.info.hora  || '--:--',
     estadio:    bruto.info.estadio || '',
     casa: {
-      id:       (bruto.info.nomeCasa || 'casa').toLowerCase().replace(/[^a-z0-9]/g,'-'),
+      id:       nomeParaId(bruto.info.nomeCasa) || 'casa',
       nome:     bruto.info.nomeCasa || 'Casa',
       bandeira: '🏳️',
       grupo:    bruto.info.grupoCasa || '?',
@@ -25,7 +26,7 @@ function converterParaFormato(bruto) {
       forma:    bruto.info.formaCasa || [],
     },
     fora: {
-      id:       (bruto.info.nomeFora || 'fora').toLowerCase().replace(/[^a-z0-9]/g,'-'),
+      id:       nomeParaId(bruto.info.nomeFora) || 'fora',
       nome:     bruto.info.nomeFora || 'Fora',
       bandeira: '🏳️',
       grupo:    bruto.info.grupoFora || '?',
@@ -75,27 +76,13 @@ async function executarCicloCompleto() {
       }
     }
 
-    // 3. Complementar com jogos do banco que não vieram no scrape desta rodada
-    // (garante que jogos descobertos em ciclos anteriores continuem aparecendo)
-    const jogosDB = await db.getJogos();
-    if (jogosDB && jogosDB.length > 0) {
-      const idsNoCache = new Set(jogos.map(j => j.id));
-      for (const j of jogosDB) {
-        const idJogo = j.id || `${(j.nomeCasa||'').toLowerCase().replace(/[^a-z0-9]/g,'-')}-vs-${(j.nomeFora||'').toLowerCase().replace(/[^a-z0-9]/g,'-')}`;
-        if (!idsNoCache.has(idJogo) && j.nomeCasa && j.nomeFora) {
-          try {
-            const convertido = converterParaFormato({
-              info: { ...j, id: idJogo },
-              odds: j.odds || {},
-              coletadoEm: j.atualizadoEm || new Date().toISOString(),
-            });
-            const jogoParsed = parseJogo(convertido);
-            jogos.push(jogoParsed);
-            cache.set(`jogo:${jogoParsed.id}`, jogoParsed, 10 * 60 * 1000);
-          } catch {}
-        }
-      }
-    }
+    // 3. (Removido) O complemento com jogos do banco é feito DENTRO do
+    //    esportivabet.js, com deduplicação por confronto normalizado.
+    //    Nada de refazer aqui — era a fonte das duplicatas no cache.
+
+    // 3b. Autolimpeza do banco: remove órfãos e duplicatas a cada ciclo,
+    //     garantindo que resíduos nunca voltem a se acumular.
+    db.limparOrfaos().catch(err => logger.warn(`Autolimpeza falhou: ${err.message}`));
 
     // Ordenar por data
     jogos.sort((a, b) => (a.startDate || a.data || '').localeCompare(b.startDate || b.data || ''));
@@ -119,7 +106,7 @@ async function executarCicloCompleto() {
         const jogos = [];
         for (const j of jogosDB) {
           try {
-            const idJogo = j.id || `${(j.nomeCasa||'').toLowerCase().replace(/[^a-z0-9]/g,'-')}-vs-${(j.nomeFora||'').toLowerCase().replace(/[^a-z0-9]/g,'-')}`;
+            const idJogo = j.confrontoId || confrontoId(j.nomeCasa, j.nomeFora);
             const convertido = converterParaFormato({
               info: { ...j, id: idJogo },
               odds: j.odds || {},
@@ -129,6 +116,10 @@ async function executarCicloCompleto() {
           } catch {}
         }
         if (jogos.length > 0) {
+          // Dedup de segurança por confronto
+          const vistos = new Set();
+          const unicos = jogos.filter(j => !vistos.has(j.id) && vistos.add(j.id));
+          jogos.length = 0; jogos.push(...unicos);
           cache.set('jogos:lista', jogos, 10 * 60 * 1000);
           cache.setTotalJogos(jogos.length);
           cache.setStatus('ok');

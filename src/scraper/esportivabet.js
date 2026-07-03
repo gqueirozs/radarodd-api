@@ -124,11 +124,7 @@ function temOddsValidas(odds) {
   return !!(odds.resultado.casa && odds.resultado.fora);
 }
 
-function nomeParaId(nome) {
-  return (nome || '').toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-}
+const { nomeParaId } = require('../utils/slug');
 
 function parsearEvento(ev, compMap, oddsMap) {
   const nomeCasa = compMap[ev.competitorIds?.[0]] || 'Casa';
