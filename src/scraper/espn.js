@@ -338,9 +338,23 @@ async function eventoDetalhes(eventoId, liga = 'fifa.world') {
     }
   }
 
+  // Probabilidade de vitória ao vivo (lance a lance) — último ponto da série
+  let probAoVivo = null;
+  const wp = Array.isArray(json.winprobability) && json.winprobability.length
+    ? json.winprobability[json.winprobability.length - 1] : null;
+  if (wp && wp.homeWinPercentage != null) {
+    const casaP   = Math.round((wp.homeWinPercentage ?? 0) * 100);
+    const empateP = wp.tiePercentage != null ? Math.round(wp.tiePercentage * 100) : null;
+    const foraP   = wp.awayWinPercentage != null
+      ? Math.round(wp.awayWinPercentage * 100)
+      : Math.max(0, 100 - casaP - (empateP ?? 0));
+    probAoVivo = { casa: casaP, empate: empateP ?? Math.max(0, 100 - casaP - foraP), fora: foraP };
+  }
+
   const det = {
     ok: true,
     status,
+    probAoVivo,
     relogio: status === 'ao-vivo' ? (stHeader.detail || compHeader?.status?.displayClock || '') : null,
     placar: status === 'agendado' ? null : {
       casa: Number(compCasa?.score ?? 0),
