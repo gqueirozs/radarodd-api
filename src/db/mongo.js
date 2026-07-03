@@ -68,4 +68,39 @@ async function setCursor(proximo) {
   await Cursor.findByIdAndUpdate('varredura', { proximo }, { upsert: true });
 }
 
-module.exports = { conectar, getJogos, upsertJogo, getCursor, setCursor };
+// Lista resumida dos documentos no banco (para diagnóstico via admin)
+async function listarJogosDB() {
+  if (!connected) return null;
+  return Jogo.find({}, { eventId: 1, nomeCasa: 1, nomeFora: 1, atualizadoEm: 1 })
+    .sort({ eventId: 1 })
+    .lean();
+}
+
+// Remove documentos órfãos do scraper antigo:
+// o scraper atual usa eventId puramente numérico (ex: "16933952"),
+// então qualquer doc com eventId ausente, nulo ou não-numérico é lixo.
+async function limparOrfaos() {
+  if (!connected) return { ok: false, mensagem: 'MongoDB não conectado' };
+  const r = await Jogo.deleteMany({
+    $or: [
+      { eventId: { $exists: false } },
+      { eventId: null },
+      { eventId: { $not: /^\d+$/ } },
+    ],
+  });
+  logger.ok(`Limpeza de órfãos: ${r.deletedCount} documentos removidos`);
+  return { ok: true, removidos: r.deletedCount };
+}
+
+// Apaga TODOS os jogos (o scraper repopula no próximo ciclo)
+async function resetJogos() {
+  if (!connected) return { ok: false, mensagem: 'MongoDB não conectado' };
+  const r = await Jogo.deleteMany({});
+  logger.warn(`Reset da collection Jogo: ${r.deletedCount} documentos removidos`);
+  return { ok: true, removidos: r.deletedCount };
+}
+
+module.exports = {
+  conectar, getJogos, upsertJogo, getCursor, setCursor,
+  listarJogosDB, limparOrfaos, resetJogos,
+};
