@@ -19,22 +19,9 @@ function calcEV(odd, probRealEstimada) {
   return parseFloat(((odd * probRealEstimada) - 1) * 100).toFixed(1);
 }
 
-// Estimativa de probabilidade real baseada em modelo simples
-// (na versão completa isso viria de um modelo estatístico)
-function estimarProbReal(mercado, oddCasa, oddFora, odd) {
-  const margem = 1 / oddCasa + 1 / (oddFora || 1);
-  const probSemMargem = (1 / odd) / margem;
-  // Ajuste conservador: assume mercado com 2-5% de edge
-  return parseFloat((probSemMargem * 0.97).toFixed(3));
-}
-
-function detectarValueBet(mercado, odd, probReal) {
-  const ev = parseFloat(calcEV(odd, probReal));
-  if (ev > 8) return { forca: 'alta', ev };
-  if (ev > 3) return { forca: 'media', ev };
-  if (ev > 0) return { forca: 'baixa', ev };
-  return null;
-}
+// Os value bets NÃO são estimados aqui: o agendador enriquece cada jogo
+// com a análise empírica (src/analise/mercados.js), baseada nos resultados
+// reais das seleções. Nunca inventamos probabilidade.
 
 function parseJogo(dadosBrutos) {
   const {
@@ -42,32 +29,8 @@ function parseJogo(dadosBrutos) {
     odds: o,
   } = dadosBrutos;
 
-  // Calcular value bets automaticamente
+  // Preenchido pelo enriquecimento empírico (agendador)
   const valueBets = [];
-  const oddCasa = parseOdd(o?.resultado?.casa);
-  const oddFora = parseOdd(o?.resultado?.fora);
-
-  const mercadosParaAnalisar = [
-    { mercado: `${casa?.nome} vence`, odd: oddCasa },
-    { mercado: `${fora?.nome} vence`, odd: oddFora },
-    { mercado: `Mais de ${o?.totalGols?.linha || 2.5} gols`, odd: parseOdd(o?.totalGols?.mais) },
-    { mercado: `Menos de ${o?.totalGols?.linha || 2.5} gols`, odd: parseOdd(o?.totalGols?.menos) },
-    { mercado: 'Ambas marcam — Sim', odd: parseOdd(o?.ambasMarcam?.sim) },
-    { mercado: 'Ambas marcam — Não', odd: parseOdd(o?.ambasMarcam?.nao) },
-    { mercado: `${casa?.nome} marca primeiro`, odd: parseOdd(o?.primeiroGol?.casa) },
-  ];
-
-  for (const { mercado, odd } of mercadosParaAnalisar) {
-    if (!odd) continue;
-    const probReal = estimarProbReal(mercado, oddCasa, oddFora, odd);
-    const vb = detectarValueBet(mercado, odd, probReal);
-    if (vb) {
-      valueBets.push({ mercado, odd, probReal, ...vb });
-    }
-  }
-
-  // Ordenar por EV decrescente
-  valueBets.sort((a, b) => b.ev - a.ev);
 
   return {
     id,

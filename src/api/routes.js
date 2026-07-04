@@ -216,6 +216,25 @@ router.get('/evento/:eventoId', async (req, res) => {
   }
 });
 
+// GET /api/analise/:id — análise empírica completa dos mercados do jogo:
+// prob. justa (sem margem), frequência real com amostra, EV e evidências
+router.get('/analise/:id', async (req, res) => {
+  const jogos = cache.get('jogos:lista') || [];
+  const jogo = jogos.find(j => String(j.id) === String(req.params.id));
+  if (!jogo) return res.status(404).json({ ok: false, mensagem: 'Jogo não encontrado' });
+  if (!jogo.odds) return res.json({ ok: false, mensagem: 'Sem odds publicadas para este jogo' });
+  try {
+    const espn = require('../scraper/espn');
+    const { analisarMercados } = require('../analise/mercados');
+    const conf = await espn.confronto(jogo.casa?.nome, jogo.fora?.nome);
+    if (!conf?.ok) return res.json({ ok: false, mensagem: 'Sem histórico suficiente para análise' });
+    res.json(analisarMercados(jogo, conf));
+  } catch (err) {
+    logger.error(`Análise ${req.params.id} falhou: ${err.message}`);
+    res.status(502).json({ ok: false, mensagem: 'Falha ao montar a análise' });
+  }
+});
+
 // GET /api/value-bets — todos os value bets de todos os jogos ordenados por EV
 router.get('/value-bets', (req, res) => {
   const jogos = cache.get('jogos:lista') || [];

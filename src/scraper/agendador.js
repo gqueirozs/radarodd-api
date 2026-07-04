@@ -85,6 +85,10 @@ async function executarCicloCompleto() {
     //     garantindo que resíduos nunca voltem a se acumular.
     db.limparOrfaos().catch(err => logger.warn(`Autolimpeza falhou: ${err.message}`));
 
+    // 3c. Enriquecimento empírico (async, não bloqueia o ciclo):
+    //     sinais calculados dos resultados reais via ESPN
+    enriquecerComAnalise(jogos).catch(err => logger.warn(`Análise empírica falhou: ${err.message}`));
+
     // Ordenar por data/hora real: mais recente primeiro
     ordenarJogosDesc(jogos);
 
@@ -147,6 +151,29 @@ function iniciarAgendador() {
     logger.info('Ciclo agendado iniciado');
     executarCicloCompleto();
   });
+}
+
+/* Calcula os sinais de cada jogo com base empírica (resultados reais).
+ * espn.confronto tem cache de 6h, então após a primeira passada o custo
+ * é praticamente zero. Roda em background e atualiza o cache ao final. */
+async function enriquecerComAnalise(jogos) {
+  const espn = require('./espn');
+  const { analisarMercados } = require('../analise/mercados');
+  let comSinal = 0;
+  for (const jogo of jogos) {
+    if (!jogo?.odds || jogo.statusReal === 'encerrado') continue;
+    try {
+      const conf = await espn.confronto(jogo.casa?.nome, jogo.fora?.nome);
+      if (!conf?.ok) continue;
+      const analise = analisarMercados(jogo, conf);
+      jogo.valueBets = analise.sinais;
+      jogo.analiseBase = analise.base;
+      if (analise.sinais.length > 0) comSinal++;
+    } catch { /* sem análise para este jogo */ }
+    await new Promise(r => setTimeout(r, 250)); // gentileza com a ESPN
+  }
+  cache.set('jogos:lista', jogos, 10 * 60 * 1000);
+  logger.ok(`Análise empírica: ${jogos.length} jogos processados, ${comSinal} com sinais de valor`);
 }
 
 module.exports = { iniciarAgendador, executarCicloCompleto };
