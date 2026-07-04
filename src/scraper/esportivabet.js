@@ -9,7 +9,6 @@
  */
 const logger = require('../utils/logger');
 const db     = require('../db/mongo');
-const { gerarOdds } = require('./geradorOdds');
 
 const BASE     = 'https://sb2frontend-altenar2.biahosted.com/api/widget';
 const PARAMS   = 'culture=pt-BR&timezoneOffset=180&integration=esportiva&deviceType=1&numFormat=en-GB&countryCode=BR';
@@ -139,7 +138,9 @@ function parsearEvento(ev, compMap, oddsMap) {
   }
 
   const odds = extrairOddsDoEvento(ev, ev._json, ev._oddsMap);
-  const oddsFinal = temOddsValidas(odds) ? odds : gerarOdds(nomeCasa, nomeFora);
+  // SEM odds sintéticas: se a casa não publicou odds válidas, o jogo vai
+  // sem odds e o front não exibe sinais — nunca inventamos números.
+  const oddsFinal = temOddsValidas(odds) ? odds : null;
 
   const info = {
     id: `${nomeParaId(nomeCasa)}-vs-${nomeParaId(nomeFora)}`,
@@ -175,7 +176,7 @@ async function executarScrape() {
         logger.warn(`Usando ${jogosDB.length} jogos salvos no MongoDB como fallback`);
         return jogosDB.map(j => ({
           info: { ...j, id: j.id || `${nomeParaId(j.nomeCasa)}-vs-${nomeParaId(j.nomeFora)}` },
-          odds: j.odds || gerarOdds(j.nomeCasa, j.nomeFora),
+          odds: j.odds || null,
           coletadoEm: j.atualizadoEm || new Date().toISOString(),
         }));
       }
@@ -219,7 +220,7 @@ async function executarScrape() {
         confrontosNaRodada.add(idConfronto);
         resultados.push({
           info: { ...j, id: idConfronto },
-          odds: j.odds || gerarOdds(j.nomeCasa, j.nomeFora),
+          odds: j.odds || null,
           coletadoEm: j.atualizadoEm || new Date().toISOString(),
         });
       }
