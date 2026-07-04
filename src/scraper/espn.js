@@ -130,6 +130,38 @@ async function resultadosTime(teamId) {
   return unicos;
 }
 
+/* ── Classificação de lances (keyEvents) ──────────────────────────
+ * Usa FRASES explícitas sobre o tipo do evento (não o texto livre,
+ * que pode conter "red" em "Scored", nomes de jogadores etc.).
+ * Substituições, pênaltis perdidos e disputas de pênaltis são ignorados. */
+function classificarLance(ke) {
+  const tipo = (ke.type?.text || '').toLowerCase();
+  const base = tipo || (ke.text || '').toLowerCase();
+
+  if (/substitui|substitution/.test(base)) return null;
+  if (/shootout|disputa de p.naltis/.test(base)) return null;
+  if (/missed|perdido|defendido|saved|anulado|disallowed/.test(base)) return null;
+
+  const jogador = ke.participants?.[0]?.athlete?.displayName || null;
+  const minuto  = ke.clock?.displayValue || '';
+  const timeId  = String(ke.team?.id || '');
+
+  if (/\bgoal\b|\bgol\b|golo|scored|convertido/.test(base)) {
+    return { tipo: 'gol', lance: { jogador, minuto, timeId,
+      contra:  /own goal|gol contra|contra/.test(base),
+      penalti: /penalty|p.nalti/.test(base) } };
+  }
+  if (/yellow card|cart.o amarelo|segundo amarelo|second yellow/.test(base)) {
+    // segundo amarelo = expulsão
+    const vermelho = /segundo amarelo|second yellow/.test(base);
+    return { tipo: vermelho ? 'vermelho' : 'amarelo', lance: { jogador, minuto, timeId } };
+  }
+  if (/red card|cart.o vermelho|expuls/.test(base)) {
+    return { tipo: 'vermelho', lance: { jogador, minuto, timeId } };
+  }
+  return null;
+}
+
 /* ── Detalhes de um jogo (gols, cartões, faltas) ─────────────────── */
 function extrairEstatistica(boxTeam, nomes) {
   for (const n of nomes) {
@@ -150,18 +182,10 @@ async function detalhesJogo(eventoId, liga) {
     const gols = [];
     const cartoes = [];
     for (const ke of (json.keyEvents || [])) {
-      const tipo = (ke.type?.id || ke.type?.text || '').toString().toLowerCase();
-      const texto = (ke.type?.text || '').toLowerCase();
-      const jogador = ke.participants?.[0]?.athlete?.displayName || null;
-      const minuto  = ke.clock?.displayValue || '';
-      const timeId  = String(ke.team?.id || '');
-      if (texto.includes('goal') || texto.includes('gol') || tipo === '70' || tipo === '137' || tipo === '98') {
-        if (!texto.includes('own') || true) gols.push({ jogador, minuto, timeId, contra: texto.includes('own') || texto.includes('contra') });
-      } else if (texto.includes('yellow') || texto.includes('amarelo')) {
-        cartoes.push({ tipo: 'amarelo', jogador, minuto, timeId });
-      } else if (texto.includes('red') || texto.includes('vermelho')) {
-        cartoes.push({ tipo: 'vermelho', jogador, minuto, timeId });
-      }
+      const c = classificarLance(ke);
+      if (!c) continue;
+      if (c.tipo === 'gol') gols.push(c.lance);
+      else cartoes.push({ tipo: c.tipo, ...c.lance });
     }
 
     const faltas = {};
@@ -333,30 +357,10 @@ async function eventoDetalhes(eventoId, liga = 'fifa.world') {
   const gols = [];
   const cartoes = [];
   for (const ke of (json.keyEvents || [])) {
-    const texto = ((ke.type?.text || '') + ' ' + (ke.text || '')).toLowerCase();
-    const jogador = ke.participants?.[0]?.athlete?.displayName || null;
-    const minuto  = ke.clock?.displayValue || '';
-    const timeId  = String(ke.team?.id || '');
-    if (/goal|gol|p.nalti convertido/.test(texto) && !/perdido|missed|anulado|disallowed/.test(texto)) {
-      gols.push({ jogador, minuto, timeId, contra: /own|contra/.test(texto), penalti: /penalty|p.nalti/.test(texto) });
-    } else if (/yellow|amarelo/.test(texto)) {
-      cartoes.push({ tipo: 'amarelo', jogador, minuto, timeId });
-    } else if (/red|vermelho/.test(texto)) {
-      cartoes.push({ tipo: 'vermelho', jogador, minuto, timeId });
-    }
-  }
-
-  // Probabilidade de vitória ao vivo (lance a lance) — último ponto da série
-  let probAoVivo = null;
-  const wp = Array.isArray(json.winprobability) && json.winprobability.length
-    ? json.winprobability[json.winprobability.length - 1] : null;
-  if (wp && wp.homeWinPercentage != null) {
-    const casaP   = Math.round((wp.homeWinPercentage ?? 0) * 100);
-    const empateP = wp.tiePercentage != null ? Math.round(wp.tiePercentage * 100) : null;
-    const foraP   = wp.awayWinPercentage != null
-      ? Math.round(wp.awayWinPercentage * 100)
-      : Math.max(0, 100 - casaP - (empateP ?? 0));
-    probAoVivo = { casa: casaP, empate: empateP ?? Math.max(0, 100 - casaP - foraP), fora: foraP };
+    const c = classificarLance(ke);
+    if (!c) continue;
+    if (c.tipo === 'gol') gols.push(c.lance);
+    else cartoes.push({ tipo: c.tipo, ...c.lance });
   }
 
   const det = {
