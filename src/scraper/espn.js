@@ -280,10 +280,18 @@ function estatisticasDaPartida(boxscore, casaId, foraId) {
     return null;
   };
 
+  // Percentuais podem vir como fração (0.93) — normaliza pra 93
+  const normalizar = (v, ehPct) => {
+    if (v == null || !ehPct) return v;
+    const n = parseFloat(String(v).replace('%', '').replace(',', '.'));
+    if (Number.isNaN(n)) return v;
+    return n <= 1 ? Math.round(n * 1000) / 10 : n;
+  };
+
   const linhas = [];
   for (const e of ESTATS_PARTIDA) {
-    const c = pegar(btCasa, e.nomes);
-    const f = pegar(btFora, e.nomes);
+    const c = normalizar(pegar(btCasa, e.nomes), !!e.sufixo);
+    const f = normalizar(pegar(btFora, e.nomes), !!e.sufixo);
     if (c != null || f != null) {
       linhas.push({ label: e.label, casa: c, fora: f, sufixo: e.sufixo || '' });
     }
