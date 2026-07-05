@@ -7,6 +7,20 @@ const { executarCicloCompleto } = require('../scraper/agendador');
 const { ordenarJogosDesc, normalizarDataHora } = require('../utils/datas');
 const auth = require('../auth/auth');
 
+// Remove tudo que é premium de um jogo (odds pré-jogo, sinais, prob)
+function stripPremiumDoJogo(j) {
+  const pre = j.statusReal !== 'ao-vivo' && j.statusReal !== 'encerrado';
+  const ret = {
+    ...j,
+    valueBets: undefined,
+    analiseBase: undefined,
+    sinaisBloqueados: (j.valueBets || []).length,
+  };
+  // Odds pré-jogo também são premium — placar ao vivo/encerrado continua público
+  if (pre) ret.odds = undefined;
+  return ret;
+}
+
 // GET /api/status — saúde e status do scraper
 router.get('/status', (req, res) => {
   const meta = cache.getMetadata();
@@ -70,16 +84,8 @@ router.get('/jogos', auth.autenticarOpcional, async (req, res) => {
   }
 
   // ── PORTÃO PREMIUM (server-side) ──────────────────────────────────
-  // Não assinante recebe apenas a CONTAGEM de sinais. O conteúdo dos
-  // sinais nunca sai da API — inspecionar o HTML/JS não revela nada.
-  if (!req.assinante) {
-    resultado = resultado.map(j => ({
-      ...j,
-      valueBets: undefined,
-      analiseBase: undefined,
-      sinaisBloqueados: (j.valueBets || []).length,
-    }));
-  }
+  // Não assinante: sem valueBets, sem odds pré-jogo. Só macro e placar.
+  if (!req.assinante) resultado = resultado.map(stripPremiumDoJogo);
 
   res.json({
     ok: true,
@@ -90,7 +96,7 @@ router.get('/jogos', auth.autenticarOpcional, async (req, res) => {
 });
 
 // GET /api/jogos/:id — odds completas de um jogo específico
-router.get('/jogos/:id', async (req, res) => {
+router.get('/jogos/:id', auth.autenticarOpcional, async (req, res) => {
   const { id } = req.params;
   const jogo = cache.get(`jogo:${id}`);
 
@@ -106,10 +112,10 @@ router.get('/jogos/:id', async (req, res) => {
       });
     }
 
-    return res.json({ ok: true, jogo: encontrado });
+    return res.json({ ok: true, jogo: req.assinante ? encontrado : stripPremiumDoJogo(encontrado) });
   }
 
-  res.json({ ok: true, jogo });
+  res.json({ ok: true, jogo: req.assinante ? jogo : stripPremiumDoJogo(jogo) });
 });
 
 // POST /api/scrape — força atualização manual (protegido por token simples)
@@ -207,10 +213,16 @@ router.get('/confronto', auth.exigirAssinatura, async (req, res) => {
 
 // GET /api/mata-mata — chaveamento do mata-mata montado automaticamente
 // pela ESPN (placares reais, pênaltis, ao vivo) + nossas odds nos agendados
-router.get('/mata-mata', async (req, res) => {
+router.get('/mata-mata', auth.autenticarOpcional, async (req, res) => {
   try {
     const mataMata = require('../scraper/mataMata');
-    res.json(await mataMata.obterChaveamento());
+    const chave = await mataMata.obterChaveamento();
+    if (!req.assinante && chave?.fases) {
+      for (const fase of Object.values(chave.fases)) {
+        for (const j of fase) if (j.status === 'agendado') j.odds = null;
+      }
+    }
+    res.json(chave);
   } catch (err) {
     logger.error(`Mata-mata falhou: ${err.message}`);
     res.status(502).json({ ok: false, mensagem: 'Falha ao montar o chaveamento' });
@@ -262,25 +274,10 @@ router.get('/analise/:id', auth.autenticarOpcional, async (req, res) => {
           .reduce((s,m,_,a)=>s+m.ev/a.length,0),
         forte: analise.mercados.filter(m => m.nivel==='forte').length,
       },
-      // Só o nível é revelado — o mercado em si (Resultado/Gols/BTTS)
-      // fica bloqueado. Rotulamos por categoria genérica só pra dar
-      // consistência visual sem revelar direção.
-      mercadosPrevia: analise.mercados.map((m, i) => ({
-        indice: i + 1,
-        nivel: m.nivel,
-        categoria: /vence/i.test(m.mercado) ? 'Resultado do jogo'
-          : /gols/i.test(m.mercado) ? 'Total de gols'
-          : /ambas/i.test(m.mercado) ? 'Ambas as equipes marcam'
-          : 'Mercado adicional',
-      })),
-      confrontoDireto: conf.h2h?.length ? {
-        vitoriasCasa: conf.resumoH2H.vitoriasCasa,
-        empates:      conf.resumoH2H.empates,
-        vitoriasFora: conf.resumoH2H.vitoriasFora,
-        total:        conf.resumoH2H.total,
-      } : null,
-      formaCasa: (conf.casa?.ultimos || []).slice(0,5).map(j => j.resultado),
-      formaFora: (conf.fora?.ultimos || []).slice(0,5).map(j => j.resultado),
+
+      // Só métricas agregadas, nada que revele o resultado prováve
+      confrontosDiretos: conf.h2h?.length || 0,
+      jogosBase: (conf.casa?.ultimos?.length || 0) + (conf.fora?.ultimos?.length || 0),
     };
     res.json(teaser);
   } catch (err) {
@@ -290,7 +287,7 @@ router.get('/analise/:id', auth.autenticarOpcional, async (req, res) => {
 });
 
 // GET /api/value-bets — todos os value bets de todos os jogos ordenados por EV
-router.get('/value-bets', (req, res) => {
+router.get('/value-bets', auth.exigirAssinatura, (req, res) => {
   const jogos = cache.get('jogos:lista') || [];
 
   const todos = jogos.flatMap(jogo =>
