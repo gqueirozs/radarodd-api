@@ -5,6 +5,7 @@ const logger   = require('../utils/logger');
 const mongoose = require('mongoose');
 const { executarCicloCompleto } = require('../scraper/agendador');
 const { ordenarJogosDesc, normalizarDataHora } = require('../utils/datas');
+const auth = require('../auth/auth');
 
 // GET /api/status — saúde e status do scraper
 router.get('/status', (req, res) => {
@@ -25,7 +26,7 @@ router.get('/status', (req, res) => {
 });
 
 // GET /api/jogos — lista todos os jogos disponíveis
-router.get('/jogos', async (req, res) => {
+router.get('/jogos', auth.autenticarOpcional, async (req, res) => {
   const jogos = cache.get('jogos:lista');
 
   if (!jogos) {
@@ -66,6 +67,18 @@ router.get('/jogos', async (req, res) => {
     await mataMata.anexarStatusReal(resultado);
   } catch (e) {
     logger.warn(`Status real indisponível: ${e.message}`);
+  }
+
+  // ── PORTÃO PREMIUM (server-side) ──────────────────────────────────
+  // Não assinante recebe apenas a CONTAGEM de sinais. O conteúdo dos
+  // sinais nunca sai da API — inspecionar o HTML/JS não revela nada.
+  if (!req.assinante) {
+    resultado = resultado.map(j => ({
+      ...j,
+      valueBets: undefined,
+      analiseBase: undefined,
+      sinaisBloqueados: (j.valueBets || []).length,
+    }));
   }
 
   res.json({
@@ -177,7 +190,7 @@ router.post('/admin/limpar', exigirAdmin, async (req, res) => {
 
 // GET /api/confronto?casa=X&fora=Y — estatísticas reais (ESPN): últimos
 // jogos de cada seleção, confronto direto, gols, cartões e faltas
-router.get('/confronto', async (req, res) => {
+router.get('/confronto', auth.exigirAssinatura, async (req, res) => {
   const { casa, fora } = req.query;
   if (!casa || !fora) {
     return res.status(400).json({ ok: false, mensagem: 'Parâmetros casa e fora são obrigatórios' });
@@ -218,7 +231,7 @@ router.get('/evento/:eventoId', async (req, res) => {
 
 // GET /api/analise/:id — análise empírica completa dos mercados do jogo:
 // prob. justa (sem margem), frequência real com amostra, EV e evidências
-router.get('/analise/:id', async (req, res) => {
+router.get('/analise/:id', auth.exigirAssinatura, async (req, res) => {
   const jogos = cache.get('jogos:lista') || [];
   const jogo = jogos.find(j => String(j.id) === String(req.params.id));
   if (!jogo) return res.status(404).json({ ok: false, mensagem: 'Jogo não encontrado' });

@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const logger = require('./utils/logger');
 const routes = require('./api/routes');
+const contaRoutes = require('./api/contaRoutes');
 const { iniciarAgendador } = require('./scraper/agendador');
 const { conectar } = require('./db/mongo');
 
@@ -45,6 +46,7 @@ app.use((req, res, next) => {
 });
 
 // ─── Rotas ────────────────────────────────────────────────────────
+app.use('/api', contaRoutes);
 app.use('/api', routes);
 
 // Rota raiz
