@@ -231,7 +231,7 @@ router.get('/evento/:eventoId', async (req, res) => {
 
 // GET /api/analise/:id — análise empírica completa dos mercados do jogo:
 // prob. justa (sem margem), frequência real com amostra, EV e evidências
-router.get('/analise/:id', auth.exigirAssinatura, async (req, res) => {
+router.get('/analise/:id', auth.autenticarOpcional, async (req, res) => {
   const jogos = cache.get('jogos:lista') || [];
   const jogo = jogos.find(j => String(j.id) === String(req.params.id));
   if (!jogo) return res.status(404).json({ ok: false, mensagem: 'Jogo não encontrado' });
@@ -241,7 +241,36 @@ router.get('/analise/:id', auth.exigirAssinatura, async (req, res) => {
     const { analisarMercados } = require('../analise/mercados');
     const conf = await espn.confronto(jogo.casa?.nome, jogo.fora?.nome);
     if (!conf?.ok) return res.json({ ok: false, mensagem: 'Sem histórico suficiente para análise' });
-    res.json(analisarMercados(jogo, conf));
+    const analise = analisarMercados(jogo, conf);
+
+    if (req.assinante) return res.json(analise);
+
+    // Teaser público: quantidade + tipo dos mercados, SEM odd/EV/prob final.
+    // Confronto direto: só o placar V-E-D (sem detalhes por jogo).
+    const teaser = {
+      ok: true,
+      teaser: true,
+      base: analise.base,
+      resumo: {
+        mercadosComValor: analise.mercados.filter(m => m.nivel==='forte' || m.nivel==='valor').length,
+        mercadosAnalisados: analise.mercados.length,
+        evMedio: analise.mercados.filter(m => m.nivel==='forte' || m.nivel==='valor')
+          .reduce((s,m,_,a)=>s+m.ev/a.length,0),
+        forte: analise.mercados.filter(m => m.nivel==='forte').length,
+      },
+      mercadosPrevia: analise.mercados.map(m => ({
+        mercado: m.mercado, nivel: m.nivel,
+      })),
+      confrontoDireto: conf.h2h?.length ? {
+        vitoriasCasa: conf.resumoH2H.vitoriasCasa,
+        empates:      conf.resumoH2H.empates,
+        vitoriasFora: conf.resumoH2H.vitoriasFora,
+        total:        conf.resumoH2H.total,
+      } : null,
+      formaCasa: (conf.casa?.ultimos || []).slice(0,5).map(j => j.resultado),
+      formaFora: (conf.fora?.ultimos || []).slice(0,5).map(j => j.resultado),
+    };
+    res.json(teaser);
   } catch (err) {
     logger.error(`Análise ${req.params.id} falhou: ${err.message}`);
     res.status(502).json({ ok: false, mensagem: 'Falha ao montar a análise' });
