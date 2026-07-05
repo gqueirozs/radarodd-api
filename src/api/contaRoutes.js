@@ -91,21 +91,55 @@ router.get('/assinatura/status/:orderUUID', auth.exigirLogin, async (req, res) =
   } catch (err) { tratarErro(res, err, 'assinatura/status'); }
 });
 
-/* Webhook Hoopay: o corpo NUNCA é confiável — extraímos o orderUUID e
- * confirmamos server-to-server na API da Hoopay antes de ativar. */
-router.post('/assinatura/webhook', express.json({ limit: '100kb' }), async (req, res) => {
+/* Webhook Hoopay — desenho de segurança:
+ *   1. O corpo NUNCA é fonte de verdade. Ativação só via confirmação
+ *      server-to-server (GET /pix/consult) na API oficial.
+ *   2. Aceita GET e POST (Hoopay às vezes faz healthcheck do endpoint
+ *      via GET no cadastro do webhook).
+ *   3. Extrai UUID de qualquer estrutura conhecida do payload.
+ *   4. Sempre responde 200 pra Hoopay não re-tentar; erros ficam no log.
+ *   5. Log inclui um resumo do payload pra rastreabilidade em auditoria. */
+async function tratarWebhook(req, res) {
   try {
     const b = req.body || {};
-    const orderUUID = b.orderUUID || b.order_uuid || b.uuid || b.order?.uuid || b.data?.orderUUID || null;
-    if (orderUUID) {
-      const r = await hoopay.confirmarSePago(orderUUID);
-      logger.info(`Webhook Hoopay ${orderUUID} → ${r.status}`);
+    // Formato Hoopay: charges[i].uuid | payment.charges[i].uuid; também aceita orderUUID/uuid soltos
+    const uuidsDoBody = [];
+    const coletar = obj => {
+      if (!obj || typeof obj !== 'object') return;
+      if (obj.uuid && typeof obj.uuid === 'string') uuidsDoBody.push(obj.uuid);
+      if (obj.orderUUID && typeof obj.orderUUID === 'string') uuidsDoBody.push(obj.orderUUID);
+      if (Array.isArray(obj.charges)) obj.charges.forEach(coletar);
+      if (obj.payment) coletar(obj.payment);
+      if (obj.data) coletar(obj.data);
+      if (obj.order) coletar(obj.order);
+    };
+    coletar(b);
+
+    // Query string como fallback (?uuid=… ou ?orderUUID=…)
+    if (req.query?.uuid) uuidsDoBody.push(req.query.uuid);
+    if (req.query?.orderUUID) uuidsDoBody.push(req.query.orderUUID);
+
+    const unicos = [...new Set(uuidsDoBody)];
+    logger.info(`Webhook Hoopay recebido (${req.method}): ${unicos.length} uuid(s) [${unicos.join(', ')}]`);
+
+    for (const uuid of unicos) {
+      try {
+        const r = await hoopay.confirmarSePago(uuid);
+        logger.info(`Webhook → ${uuid}: ${r.status}${r.statusBruto ? ` (raw=${r.statusBruto})` : ''}`);
+      } catch (e) {
+        logger.warn(`Webhook consulta ${uuid} falhou: ${e.message}`);
+      }
     }
-    res.json({ ok: true }); // sempre 200 pra Hoopay não re-tentar infinito
+
+    res.json({ ok: true, processados: unicos.length });
   } catch (err) {
-    logger.warn(`Webhook falhou: ${err.message}`);
-    res.json({ ok: true });
+    logger.warn(`Webhook exceção: ${err.message}`);
+    res.json({ ok: true }); // 200 sempre, pra Hoopay não re-tentar
   }
-});
+}
+
+router.post('/assinatura/webhook', express.json({ limit: '100kb' }), tratarWebhook);
+router.get('/assinatura/webhook', tratarWebhook); // healthcheck / validação da Hoopay
+router.head('/assinatura/webhook', (req, res) => res.status(200).end());
 
 module.exports = router;
