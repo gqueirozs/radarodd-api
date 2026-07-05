@@ -12,12 +12,23 @@ const logger = require('../utils/logger');
 const { Pagamento, ativarAssinatura } = require('../auth/auth');
 
 const HOOPAY_BASE = process.env.HOOPAY_BASE_URL || 'https://api.pay.hoopay.com.br';
-const HOOPAY_KEY  = process.env.HOOPAY_API_KEY || '';
+const HOOPAY_CLIENT_ID     = process.env.HOOPAY_CLIENT_ID || '';
+const HOOPAY_CLIENT_SECRET = process.env.HOOPAY_CLIENT_SECRET || '';
+const HOOPAY_KEY  = process.env.HOOPAY_API_KEY || ''; // alternativa: chave única
 const PRECO_MENSAL = 9.99;
 
 function headersHoopay() {
   const h = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
-  if (HOOPAY_KEY) h['Authorization'] = `Bearer ${HOOPAY_KEY}`;
+  if (HOOPAY_CLIENT_ID && HOOPAY_CLIENT_SECRET) {
+    // Client ID + Secret → HTTP Basic (padrão de gateways com esse par)
+    const basic = Buffer.from(`${HOOPAY_CLIENT_ID}:${HOOPAY_CLIENT_SECRET}`).toString('base64');
+    h['Authorization'] = `Basic ${basic}`;
+    // alguns gateways aceitam/exigem os pares também como headers próprios
+    h['ci'] = HOOPAY_CLIENT_ID;
+    h['cs'] = HOOPAY_CLIENT_SECRET;
+  } else if (HOOPAY_KEY) {
+    h['Authorization'] = `Bearer ${HOOPAY_KEY}`;
+  }
   return h;
 }
 
