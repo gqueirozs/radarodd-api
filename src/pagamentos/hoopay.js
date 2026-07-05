@@ -75,14 +75,13 @@ async function criarCobrancaPix(usuario, ipCliente) {
 
   const resp = await hoopay('/charge', { method: 'POST', body: JSON.stringify(payload) });
 
-  // Campos podem variar de nome — procurar defensivamente
-  const orderUUID = resp?.orderUUID || resp?.order_uuid || resp?.uuid || resp?.order?.uuid
-    || resp?.data?.orderUUID || resp?.data?.uuid || null;
-  const copiaCola = resp?.pix?.copyPaste || resp?.pix?.qrcodeText || resp?.pix?.emv
-    || resp?.copyPaste || resp?.qrcode_text || resp?.data?.pix?.copyPaste
-    || resp?.payments?.[0]?.pix?.copyPaste || resp?.payments?.[0]?.pix?.emv || null;
-  const qrcode = resp?.pix?.qrcode || resp?.pix?.qrcodeImage || resp?.qrcode
-    || resp?.data?.pix?.qrcode || resp?.payments?.[0]?.pix?.qrcode || null;
+  // Formato da Hoopay: payment.charges[0].{uuid,pixPayload,pixQrCode}
+  const charge = resp?.payment?.charges?.[0] || resp?.charges?.[0] || resp?.charge || null;
+  const orderUUID = charge?.uuid || charge?.orderUUID
+    || resp?.payment?.uuid || resp?.orderUUID || resp?.uuid || null;
+  const copiaCola = charge?.pixPayload || charge?.copyPaste || charge?.pix?.copyPaste
+    || charge?.emv || null;
+  const qrcode = charge?.pixQrCode || charge?.qrCode || charge?.pix?.qrcode || null;
 
   if (!orderUUID) {
     logger.error(`Hoopay /charge sem orderUUID reconhecível: ${JSON.stringify(resp).slice(0, 800)}`);
