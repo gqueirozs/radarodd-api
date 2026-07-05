@@ -36,7 +36,7 @@ app.use(cors({
     callback(new Error(`CORS bloqueado para: ${origin}`));
   },
   methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'x-admin-token'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-token'],
 }));
 
 // Log de requisições
