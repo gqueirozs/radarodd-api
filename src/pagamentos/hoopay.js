@@ -85,8 +85,14 @@ async function criarCobrancaPix(usuario, ipCliente) {
     || resp?.data?.pix?.qrcode || resp?.payments?.[0]?.pix?.qrcode || null;
 
   if (!orderUUID) {
-    logger.error(`Hoopay /charge sem orderUUID reconhecível: ${JSON.stringify(resp).slice(0, 400)}`);
+    logger.error(`Hoopay /charge sem orderUUID reconhecível: ${JSON.stringify(resp).slice(0, 800)}`);
     throw new Error('Resposta inesperada do provedor de pagamento');
+  }
+
+  // Diagnóstico: se orderUUID veio mas copia/qr não, dá pra ver as chaves
+  if (!copiaCola || !qrcode) {
+    const amostra = JSON.stringify(resp).slice(0, 1500);
+    logger.warn(`Hoopay /charge sem PIX (copia=${!!copiaCola} qr=${!!qrcode}). Resposta bruta: ${amostra}`);
   }
 
   const pagamento = await Pagamento.create({
