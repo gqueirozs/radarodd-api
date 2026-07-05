@@ -241,6 +241,10 @@ router.get('/analise/:id', auth.autenticarOpcional, async (req, res) => {
     const { analisarMercados } = require('../analise/mercados');
     const conf = await espn.confronto(jogo.casa?.nome, jogo.fora?.nome);
     if (!conf?.ok) return res.json({ ok: false, mensagem: 'Sem histórico suficiente para análise' });
+    // Sinais só valem PRÉ-JOGO. Ao vivo ou encerrado, análise não vai
+    if (jogo.statusReal === 'ao-vivo' || jogo.statusReal === 'encerrado') {
+      return res.json({ ok: false, mensagem: 'Sinais só disponíveis antes do jogo começar', jogoIniciado: true });
+    }
     const analise = analisarMercados(jogo, conf);
 
     if (req.assinante) return res.json(analise);
@@ -258,8 +262,16 @@ router.get('/analise/:id', auth.autenticarOpcional, async (req, res) => {
           .reduce((s,m,_,a)=>s+m.ev/a.length,0),
         forte: analise.mercados.filter(m => m.nivel==='forte').length,
       },
-      mercadosPrevia: analise.mercados.map(m => ({
-        mercado: m.mercado, nivel: m.nivel,
+      // Só o nível é revelado — o mercado em si (Resultado/Gols/BTTS)
+      // fica bloqueado. Rotulamos por categoria genérica só pra dar
+      // consistência visual sem revelar direção.
+      mercadosPrevia: analise.mercados.map((m, i) => ({
+        indice: i + 1,
+        nivel: m.nivel,
+        categoria: /vence/i.test(m.mercado) ? 'Resultado do jogo'
+          : /gols/i.test(m.mercado) ? 'Total de gols'
+          : /ambas/i.test(m.mercado) ? 'Ambas as equipes marcam'
+          : 'Mercado adicional',
       })),
       confrontoDireto: conf.h2h?.length ? {
         vitoriasCasa: conf.resumoH2H.vitoriasCasa,
