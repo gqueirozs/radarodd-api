@@ -7,18 +7,19 @@ const { executarCicloCompleto } = require('../scraper/agendador');
 const { ordenarJogosDesc, normalizarDataHora } = require('../utils/datas');
 const auth = require('../auth/auth');
 
-// Remove tudo que é premium de um jogo (odds pré-jogo, sinais, prob)
+// Remove APENAS o que é premium: odds pré-jogo e sinais.
+// Todo o resto (times, hora, placar, estatísticas de jogo, forma) é
+// conteúdo público que qualquer portal esportivo mostra — esconder
+// dá falsa impressão de "sem dados" e afasta o visitante.
 function stripPremiumDoJogo(j) {
   const pre = j.statusReal !== 'ao-vivo' && j.statusReal !== 'encerrado';
-  const ret = {
+  return {
     ...j,
     valueBets: undefined,
     analiseBase: undefined,
     sinaisBloqueados: (j.valueBets || []).length,
+    odds: pre ? null : j.odds, // odds pré-jogo escondidas; placar ao vivo/encerrado fica
   };
-  // Odds pré-jogo também são premium — placar ao vivo/encerrado continua público
-  if (pre) ret.odds = undefined;
-  return ret;
 }
 
 // GET /api/status — saúde e status do scraper
