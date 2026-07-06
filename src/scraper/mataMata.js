@@ -250,23 +250,26 @@ function montarChaves(fases) {
   const quartas = porData('quartas');
   const semis   = porData('semis');
 
-  // Índice oficial: 2ª rodada e oitavas seguem a ordem do calendário
+  // Copa 2026 (48 seleções): 32 na segunda rodada → 16 oitavas → 8 quartas
+  // → 4 semis (2 por chave) → 2 finais (final + 3º lugar).
+  // Nós dividimos em 2 chaves visuais (A e B) só para o layout, cada uma
+  // ficando com metade do bracket alimentando UMA final.
   segunda.forEach((j, i) => { j.ordem = i + 1; });
   oitavas.forEach((j, i) => { j.ordem = i + 1; });
 
-  // Quartas: índice deduzido das oitavas que a alimentam (refs), senão pela data
+  // Quartas: refs de oitavas 1–16 (Copa tem 16 oitavas)
   quartas.forEach((j, i) => {
-    const refs = refsDoJogo(j).filter(n => n >= 1 && n <= 8);
+    const refs = refsDoJogo(j).filter(n => n >= 1 && n <= 16);
     j.feeds = refs.length ? refs : [2 * (i + 1) - 1, 2 * (i + 1)];
-    j.ordem = Math.ceil(Math.min(...j.feeds) / 2);
+    j.ordem = Math.ceil(Math.min(...j.feeds) / 2); // ordem 1-8 (8 quartas)
   });
   quartas.sort((a, b) => a.ordem - b.ordem);
 
-  // Semis: idem, a partir das quartas
+  // Semis: refs de quartas 1–8 (Copa tem 8 quartas)
   semis.forEach((j, i) => {
-    const refs = refsDoJogo(j).filter(n => n >= 1 && n <= 4);
+    const refs = refsDoJogo(j).filter(n => n >= 1 && n <= 8);
     j.feeds = refs.length ? refs : [2 * (i + 1) - 1, 2 * (i + 1)];
-    j.ordem = Math.ceil(Math.min(...j.feeds) / 2);
+    j.ordem = Math.ceil(Math.min(...j.feeds) / 2); // ordem 1-4 (4 semis)
   });
   semis.sort((a, b) => a.ordem - b.ordem);
 
@@ -302,31 +305,73 @@ function montarChaves(fases) {
     }
   }
 
-  const montarChave = (nome, semi) => {
-    const qs = semi ? quartas.filter(q => (semi.feeds || []).includes(q.ordem)) : [];
-    const os = [];
-    for (const q of qs) for (const f of q.feeds) {
-      const o = oitavas.find(x => x.ordem === f);
-      os.push(o || null);
+  // Cada chave (A ou B) agrupa DUAS semifinais — a árvore da Semi(2k-1)
+  // e da Semi(2k) formam uma metade do bracket.
+  // Total por chave: 2 semis, 4 quartas, 8 oitavas, 16 jogos da 2ª rodada.
+  const montarChave = (nome, semisDaChave) => {
+    const qs = [];
+    for (const s of semisDaChave) {
+      if (!s?.feeds) continue;
+      for (const f of s.feeds) {
+        const q = quartas.find(x => x.ordem === f);
+        if (q && !qs.includes(q)) qs.push(q);
+      }
     }
-    while (os.length < 4) os.push(null);
+    // Se não achou quartas via feeds das semis, fallback: quartas por ordem
+    // (chave A pega 1-4, chave B pega 5-8)
+    if (qs.length === 0) {
+      const inicio = nome === 'Chave A' ? 1 : 5;
+      for (let k = inicio; k <= inicio + 3; k++) {
+        const q = quartas.find(x => x.ordem === k);
+        if (q) qs.push(q);
+      }
+    }
+
+    const os = [];
+    for (const q of qs) for (const f of (q.feeds || [])) {
+      const o = oitavas.find(x => x.ordem === f);
+      if (o && !os.includes(o)) os.push(o);
+    }
+    // Fallback pra oitavas se as quartas não trouxeram
+    if (os.length === 0 && qs.length === 0) {
+      const inicio = nome === 'Chave A' ? 1 : 9;
+      for (let k = inicio; k <= inicio + 7; k++) {
+        const o = oitavas.find(x => x.ordem === k);
+        if (o) os.push(o);
+      }
+    }
+
     const sg = [];
     for (const o of os) {
-      const feeds = o ? (alimentadores.get(o.ordem) || [null, null]) : [null, null];
+      const feeds = alimentadores.get(o.ordem) || [null, null];
       sg.push(feeds[0], feeds[1]);
     }
+    // Fallback da 2ª rodada por ordem se as oitavas não deram os feeds
+    if (sg.filter(Boolean).length === 0) {
+      const inicio = nome === 'Chave A' ? 1 : 17;
+      for (let k = inicio; k <= inicio + 15; k++) {
+        const s = segunda.find(x => x.ordem === k);
+        if (s) sg.push(s);
+      }
+    }
+
+    // Preencher com nulls até os tamanhos esperados (2/4/8/16 por chave)
+    while (qs.length < 4) qs.push(null);
+    while (os.length < 8) os.push(null);
+    while (sg.length < 16) sg.push(null);
+
     return {
       nome,
-      semi: semi || null,
-      quartas: qs.length ? qs : [null, null],
-      oitavas: os.slice(0, 4),
-      segunda: sg.slice(0, 8),
+      semis: semisDaChave.length ? semisDaChave : [null, null],
+      quartas: qs.slice(0, 4),
+      oitavas: os.slice(0, 8),
+      segunda: sg.slice(0, 16),
     };
   };
 
   return [
-    montarChave('Chave A', semis[0] || null),
-    montarChave('Chave B', semis[1] || null),
+    montarChave('Chave A', [semis[0], semis[1]].filter(Boolean)),
+    montarChave('Chave B', [semis[2], semis[3]].filter(Boolean)),
   ];
 }
 
