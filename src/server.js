@@ -25,7 +25,7 @@ app.use(cors({
   origin: (origin, callback) => {
     // Permite requests sem origin (Postman, curl, etc.)
     if (!origin) return callback(null, true);
-    // Permite todos os subdomínios netlify.app e localhost
+    // Permite subdomínios netlify.app, vercel.app e localhost
     if (
       origin.endsWith('.netlify.app') ||
       origin.startsWith('http://localhost') ||
