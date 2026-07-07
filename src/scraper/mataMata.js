@@ -305,35 +305,33 @@ function montarChaves(fases) {
     }
   }
 
-  // Divisão A/B é FIXA por ordem (segue layout oficial FIFA):
-  //   Chave A: ordens 1-16 na segunda, 1-8 nas oitavas, 1-4 nas quartas, 1-2 nas semis
-  //   Chave B: ordens 17-32 na segunda, 9-16 nas oitavas, 5-8 nas quartas, 3-4 nas semis
-  // Determinística e sem depender de feeds que a ESPN pode não ter publicado.
-  const montarChave = (nome) => {
-    const isA = nome === 'Chave A';
-    const rangeSegunda = isA ? [1, 16]  : [17, 32];
-    const rangeOitavas = isA ? [1, 8]   : [9, 16];
-    const rangeQuartas = isA ? [1, 4]   : [5, 8];
-    const rangeSemis   = isA ? [1, 2]   : [3, 4];
-
-    const pegar = (arr, [ini, fim]) => {
-      const r = [];
-      for (let k = ini; k <= fim; k++) {
-        r.push(arr.find(x => x.ordem === k) || null);
-      }
-      return r;
-    };
-
-    return {
-      nome,
-      semis:   pegar(semis,   rangeSemis),
-      quartas: pegar(quartas, rangeQuartas),
-      oitavas: pegar(oitavas, rangeOitavas),
-      segunda: pegar(segunda, rangeSegunda),
-    };
+  // Divisão A/B: metade do bracket em cada lado.
+  // - Se há ≤N/2 jogos por fase, distribuímos alternadamente por ordem
+  //   (jogos ímpares → A, pares → B) — mantém equilíbrio visual
+  // - Isso funciona tanto quando a ESPN publica só metade quanto quando
+  //   publica tudo
+  const dividir = (arr, tamanhoPorChave) => {
+    const A = new Array(tamanhoPorChave).fill(null);
+    const B = new Array(tamanhoPorChave).fill(null);
+    const sorted = [...arr].sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
+    sorted.forEach((j, idx) => {
+      // Alternância pura pela posição no array cronológico
+      const chave = idx % 2 === 0 ? A : B;
+      const pos = Math.floor(idx / 2);
+      if (pos < tamanhoPorChave) chave[pos] = j;
+    });
+    return [A, B];
   };
 
-  return [ montarChave('Chave A'), montarChave('Chave B') ];
+  const [segA, segB] = dividir(segunda, 16);
+  const [oitA, oitB] = dividir(oitavas, 8);
+  const [quaA, quaB] = dividir(quartas, 4);
+  const [semA, semB] = dividir(semis,   2);
+
+  return [
+    { nome: 'Chave A', segunda: segA, oitavas: oitA, quartas: quaA, semis: semA },
+    { nome: 'Chave B', segunda: segB, oitavas: oitB, quartas: quaB, semis: semB },
+  ];
 }
 
 // normalização local leve (evita import circular com utils/slug em runtime)
