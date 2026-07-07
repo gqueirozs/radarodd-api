@@ -28,6 +28,7 @@ app.use(cors({
     // Permite subdomínios netlify.app, vercel.app e localhost
     if (
       origin.endsWith('.netlify.app') ||
+      origin.endsWith('.vercel.app') ||
       origin.startsWith('http://localhost') ||
       origens.some(o => o && origin.startsWith(o))
     ) {
