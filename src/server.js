@@ -29,6 +29,8 @@ app.use(cors({
     if (
       origin.endsWith('.netlify.app') ||
       origin.endsWith('.vercel.app') ||
+      origin === 'https://sinalodds.com.br' ||
+      origin === 'https://www.sinalodds.com.br' ||
       origin.startsWith('http://localhost') ||
       origens.some(o => o && origin.startsWith(o))
     ) {
