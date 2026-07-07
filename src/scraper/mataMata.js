@@ -305,74 +305,35 @@ function montarChaves(fases) {
     }
   }
 
-  // Cada chave (A ou B) agrupa DUAS semifinais — a árvore da Semi(2k-1)
-  // e da Semi(2k) formam uma metade do bracket.
-  // Total por chave: 2 semis, 4 quartas, 8 oitavas, 16 jogos da 2ª rodada.
-  const montarChave = (nome, semisDaChave) => {
-    const qs = [];
-    for (const s of semisDaChave) {
-      if (!s?.feeds) continue;
-      for (const f of s.feeds) {
-        const q = quartas.find(x => x.ordem === f);
-        if (q && !qs.includes(q)) qs.push(q);
-      }
-    }
-    // Se não achou quartas via feeds das semis, fallback: quartas por ordem
-    // (chave A pega 1-4, chave B pega 5-8)
-    if (qs.length === 0) {
-      const inicio = nome === 'Chave A' ? 1 : 5;
-      for (let k = inicio; k <= inicio + 3; k++) {
-        const q = quartas.find(x => x.ordem === k);
-        if (q) qs.push(q);
-      }
-    }
+  // Divisão A/B é FIXA por ordem (segue layout oficial FIFA):
+  //   Chave A: ordens 1-16 na segunda, 1-8 nas oitavas, 1-4 nas quartas, 1-2 nas semis
+  //   Chave B: ordens 17-32 na segunda, 9-16 nas oitavas, 5-8 nas quartas, 3-4 nas semis
+  // Determinística e sem depender de feeds que a ESPN pode não ter publicado.
+  const montarChave = (nome) => {
+    const isA = nome === 'Chave A';
+    const rangeSegunda = isA ? [1, 16]  : [17, 32];
+    const rangeOitavas = isA ? [1, 8]   : [9, 16];
+    const rangeQuartas = isA ? [1, 4]   : [5, 8];
+    const rangeSemis   = isA ? [1, 2]   : [3, 4];
 
-    const os = [];
-    for (const q of qs) for (const f of (q.feeds || [])) {
-      const o = oitavas.find(x => x.ordem === f);
-      if (o && !os.includes(o)) os.push(o);
-    }
-    // Fallback pra oitavas se as quartas não trouxeram
-    if (os.length === 0 && qs.length === 0) {
-      const inicio = nome === 'Chave A' ? 1 : 9;
-      for (let k = inicio; k <= inicio + 7; k++) {
-        const o = oitavas.find(x => x.ordem === k);
-        if (o) os.push(o);
+    const pegar = (arr, [ini, fim]) => {
+      const r = [];
+      for (let k = ini; k <= fim; k++) {
+        r.push(arr.find(x => x.ordem === k) || null);
       }
-    }
-
-    const sg = [];
-    for (const o of os) {
-      const feeds = alimentadores.get(o.ordem) || [null, null];
-      sg.push(feeds[0], feeds[1]);
-    }
-    // Fallback da 2ª rodada por ordem se as oitavas não deram os feeds
-    if (sg.filter(Boolean).length === 0) {
-      const inicio = nome === 'Chave A' ? 1 : 17;
-      for (let k = inicio; k <= inicio + 15; k++) {
-        const s = segunda.find(x => x.ordem === k);
-        if (s) sg.push(s);
-      }
-    }
-
-    // Preencher com nulls até os tamanhos esperados (2/4/8/16 por chave)
-    while (qs.length < 4) qs.push(null);
-    while (os.length < 8) os.push(null);
-    while (sg.length < 16) sg.push(null);
+      return r;
+    };
 
     return {
       nome,
-      semis: semisDaChave.length ? semisDaChave : [null, null],
-      quartas: qs.slice(0, 4),
-      oitavas: os.slice(0, 8),
-      segunda: sg.slice(0, 16),
+      semis:   pegar(semis,   rangeSemis),
+      quartas: pegar(quartas, rangeQuartas),
+      oitavas: pegar(oitavas, rangeOitavas),
+      segunda: pegar(segunda, rangeSegunda),
     };
   };
 
-  return [
-    montarChave('Chave A', [semis[0], semis[1]].filter(Boolean)),
-    montarChave('Chave B', [semis[2], semis[3]].filter(Boolean)),
-  ];
+  return [ montarChave('Chave A'), montarChave('Chave B') ];
 }
 
 // normalização local leve (evita import circular com utils/slug em runtime)
