@@ -144,28 +144,6 @@ function exigirAdmin(req, res, next) {
   next();
 }
 
-// POST /api/admin/ativar-assinatura — ativa/renova 30 dias pra um email
-router.post('/admin/ativar-assinatura', exigirAdmin, async (req, res) => {
-  try {
-    const { email, dias = 30 } = req.body || {};
-    if (!email) return res.status(400).json({ ok: false, mensagem: 'email obrigatório' });
-    const authMod = require('../auth/auth');
-    const u = await authMod.Usuario.findOne({ email: email.toLowerCase().trim() });
-    if (!u) return res.status(404).json({ ok: false, mensagem: 'usuário não encontrado' });
-    const agora = new Date();
-    const base = u.assinatura?.expiraEm && new Date(u.assinatura.expiraEm) > agora
-      ? new Date(u.assinatura.expiraEm) : agora;
-    u.assinatura.expiraEm = new Date(base.getTime() + dias * 24 * 60 * 60 * 1000);
-    u.assinatura.ultimoPagamento = agora;
-    await u.save();
-    logger.ok(`[ADMIN] Assinatura ativada: ${u.email} até ${u.assinatura.expiraEm.toISOString()}`);
-    res.json({ ok: true, email: u.email, nome: u.nome, expiraEm: u.assinatura.expiraEm });
-  } catch (err) {
-    logger.error(`ativar-assinatura: ${err.message}`);
-    res.status(500).json({ ok: false, mensagem: err.message });
-  }
-});
-
 // GET /api/admin/jogos-db — inspeciona os documentos salvos no MongoDB
 router.get('/admin/jogos-db', exigirAdmin, async (req, res) => {
   const db = require('../db/mongo');
