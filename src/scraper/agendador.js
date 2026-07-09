@@ -159,9 +159,17 @@ function iniciarAgendador() {
 async function enriquecerComAnalise(jogos) {
   const espn = require('./espn');
   const { analisarMercados } = require('../analise/mercados');
-  let comSinal = 0;
+  const trackRecord = require('../analise/trackRecord');
+  let comSinal = 0, novosSnapshots = 0, sinaisResolvidos = 0;
   for (const jogo of jogos) {
-    if (!jogo?.odds || jogo.statusReal === 'encerrado') continue;
+    if (!jogo?.odds) continue;
+
+    // Resolver sinais em aberto de jogos encerrados (track record)
+    if (jogo.statusReal === 'encerrado' && jogo.placar) {
+      try { sinaisResolvidos += await trackRecord.resolverSinaisDoJogo(jogo); } catch { /* ok */ }
+      continue;
+    }
+
     try {
       const conf = await espn.confronto(jogo.casa?.nome, jogo.fora?.nome);
       if (!conf?.ok) continue;
@@ -169,11 +177,13 @@ async function enriquecerComAnalise(jogos) {
       jogo.valueBets = analise.sinais;
       jogo.analiseBase = analise.base;
       if (analise.sinais.length > 0) comSinal++;
+      // Snapshot pra track record histórico
+      try { novosSnapshots += await trackRecord.snapshotSinais(jogo, analise); } catch { /* ok */ }
     } catch { /* sem análise para este jogo */ }
     await new Promise(r => setTimeout(r, 250)); // gentileza com a ESPN
   }
   cache.set('jogos:lista', jogos, 10 * 60 * 1000);
-  logger.ok(`Análise empírica: ${jogos.length} jogos processados, ${comSinal} com sinais de valor`);
+  logger.ok(`Análise empírica: ${jogos.length} jogos processados, ${comSinal} com sinais de valor, ${novosSnapshots} snapshots gravados, ${sinaisResolvidos} resolvidos`);
 }
 
 module.exports = { iniciarAgendador, executarCicloCompleto };

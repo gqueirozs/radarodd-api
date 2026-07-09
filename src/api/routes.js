@@ -6,6 +6,8 @@ const mongoose = require('mongoose');
 const { executarCicloCompleto } = require('../scraper/agendador');
 const { ordenarJogosDesc, normalizarDataHora } = require('../utils/datas');
 const auth = require('../auth/auth');
+const trackRecord = require('../analise/trackRecord');
+const financeiro = require('../analise/financeiro');
 
 // Remove APENAS o que é premium: odds pré-jogo e sinais.
 // Todo o resto (times, hora, placar, estatísticas de jogo, forma) é
@@ -260,7 +262,14 @@ router.get('/analise/:id', auth.autenticarOpcional, async (req, res) => {
     }
     const analise = analisarMercados(jogo, conf);
 
-    if (req.assinante) return res.json(analise);
+    if (req.assinante) {
+      // Enriquecer cada mercado com Kelly e retorno de referência (R\$100)
+      for (const m of analise.mercados) {
+        m.kellyPct = +(financeiro.kellyQuarter(m.probFinal / 100, m.odd) * 100).toFixed(2);
+        m.retornoPor100 = +(100 * m.odd).toFixed(2);
+      }
+      return res.json(analise);
+    }
 
     // Teaser público: quantidade + tipo dos mercados, SEM odd/EV/prob final.
     // Confronto direto: só o placar V-E-D (sem detalhes por jogo).
@@ -311,6 +320,84 @@ router.get('/value-bets', auth.exigirAssinatura, (req, res) => {
     total: resultado.length,
     valueBets: resultado,
   });
+});
+
+
+// GET /api/track-record — histórico honesto (público — ferramenta de venda)
+router.get('/track-record', async (req, res) => {
+  try {
+    const stats = await trackRecord.estatisticasTrackRecord();
+    res.json({ ok: true, ...stats });
+  } catch (err) {
+    logger.error(`track-record: ${err.message}`);
+    res.status(500).json({ ok: false, mensagem: 'Falha ao calcular track record' });
+  }
+});
+
+// GET /api/ranking — melhores oportunidades da rodada (assinantes)
+// Consolida todos os sinais VALOR FORTE/VALOR de jogos futuros por EV
+router.get('/ranking', auth.exigirAssinatura, async (req, res) => {
+  try {
+    const jogos = cache.get('jogos:lista') || [];
+    const espn = require('../scraper/espn');
+    const { analisarMercados } = require('../analise/mercados');
+
+    const oportunidades = [];
+    for (const jogo of jogos) {
+      if (!jogo?.odds || jogo.statusReal === 'ao-vivo' || jogo.statusReal === 'encerrado') continue;
+      try {
+        const conf = await espn.confronto(jogo.casa?.nome, jogo.fora?.nome);
+        if (!conf?.ok) continue;
+        const analise = analisarMercados(jogo, conf);
+        for (const m of analise.mercados) {
+          if (m.nivel !== 'forte' && m.nivel !== 'valor') continue;
+          oportunidades.push({
+            jogoId: jogo.id,
+            confronto: `${jogo.casa?.nome} × ${jogo.fora?.nome}`,
+            competicao: jogo.competicao,
+            data: jogo.data, hora: jogo.hora,
+            mercadoId: m.id, mercado: m.mercado,
+            odd: m.odd, probFinal: m.probFinal, ev: m.ev, nivel: m.nivel,
+            evidencia: m.evidencia,
+            kellyPct: +(financeiro.kellyQuarter(m.probFinal / 100, m.odd) * 100).toFixed(2),
+          });
+        }
+      } catch { /* pula jogos com falha */ }
+    }
+
+    oportunidades.sort((a, b) => b.ev - a.ev);
+    const evMedio = oportunidades.length
+      ? oportunidades.reduce((a, o) => a + o.ev, 0) / oportunidades.length : 0;
+
+    res.json({
+      ok: true,
+      total: oportunidades.length,
+      forte: oportunidades.filter(o => o.nivel === 'forte').length,
+      valor: oportunidades.filter(o => o.nivel === 'valor').length,
+      evMedio: +evMedio.toFixed(1),
+      oportunidades,
+    });
+  } catch (err) {
+    logger.error(`ranking: ${err.message}`);
+    res.status(500).json({ ok: false, mensagem: 'Falha ao gerar ranking' });
+  }
+});
+
+// POST /api/combinada — calcula matemática de uma múltipla (assinantes)
+// Body: { pernas: [{ odd, prob }], stake }
+router.post('/combinada', auth.exigirAssinatura, express.json(), (req, res) => {
+  try {
+    const { pernas, stake } = req.body || {};
+    if (!Array.isArray(pernas) || pernas.length === 0) {
+      return res.status(400).json({ ok: false, mensagem: 'pernas obrigatório' });
+    }
+    const stakeNum = Number(stake) || 100;
+    const r = financeiro.retornoCombinada(pernas, stakeNum);
+    res.json({ ok: true, ...r });
+  } catch (err) {
+    logger.error(`combinada: ${err.message}`);
+    res.status(500).json({ ok: false, mensagem: err.message });
+  }
 });
 
 module.exports = router;
